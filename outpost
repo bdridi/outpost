@@ -1,0 +1,256 @@
+#!/usr/bin/env bash
+# Outpost - client mission workspace tool. Needs only bash + git (git-crypt for private notes).
+set -euo pipefail
+
+VERSION="0.1.0"
+
+# Resolve the real location of this script (follows symlinks).
+src="${BASH_SOURCE[0]}"
+while [ -h "$src" ]; do
+  d=$(cd -P "$(dirname "$src")" && pwd)
+  src=$(readlink "$src")
+  case "$src" in /*) ;; *) src="$d/$src" ;; esac
+done
+OUTPOST_HOME=$(cd -P "$(dirname "$src")" && pwd)
+TEMPLATES="$OUTPOST_HOME/templates"
+
+CREATED=()   # absolute paths of files created during this run
+WARNINGS=()
+
+VERBOSE=0
+
+# Colors only on a real terminal (NO_COLOR respected); emoji only on a UTF-8 locale.
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ] && [ "${TERM:-dumb}" != dumb ]; then
+  B=$'\033[1m'; D=$'\033[2m'; G=$'\033[32m'; Y=$'\033[33m'; R=$'\033[31m'; N=$'\033[0m'
+else
+  B=""; D=""; G=""; Y=""; R=""; N=""
+fi
+case "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" in
+  *[Uu][Tt][Ff]-8*|*[Uu][Tt][Ff]8*)
+    I_START="🛰 "; I_DIR="📁"; I_NOTES="📝"; I_OK="✔"; I_WARN="⚠"; I_DOT="·"; I_DONE="✅"; I_NEXT="👉" ;;
+  *)
+    I_START=">>"; I_DIR="[+]"; I_NOTES="[n]"; I_OK="ok"; I_WARN="!!"; I_DOT="-"; I_DONE="OK"; I_NEXT="->" ;;
+esac
+
+say()  { printf '%s\n' "$*"; }
+ok()   { printf '   %s%s%s %s\n' "$G" "$I_OK" "$N" "$*"; }
+warn() { WARNINGS+=("$*"); printf '   %s%s %s%s\n' "$Y" "$I_WARN" "$*" "$N"; }
+die()  { printf '%soutpost: %s%s\n' "$R" "$*" "$N" >&2; exit 1; }
+
+# summary <label> <count_before>: one line per folder, files listed only with --verbose.
+summary() {
+  local n=$(( ${#CREATED[@]} - $2 )) f
+  if [ "$n" -eq 0 ]; then
+    printf '%s %s%-13s%s %sup to date%s\n' "$I_DIR" "$B" "$1" "$N" "$D" "$N"
+  else
+    printf '%s %s%-13s%s %s+%d file(s)%s\n' "$I_DIR" "$B" "$1" "$N" "$G" "$n" "$N"
+    if [ "$VERBOSE" = 1 ]; then
+      for f in "${CREATED[@]:$2}"; do printf '     %s%s%s\n' "$D" "${f#"$MISSION_ROOT"/}" "$N"; done
+    fi
+  fi
+}
+
+usage() {
+  cat <<EOF
+Outpost $VERSION
+
+Usage:
+  outpost init [path] [--agent copilot|claude] [--dry-run]
+                        create the mission layout (default: current directory,
+                        agent: copilot, or the one saved by a previous init)
+                        --dry-run: path is a folder name created under
+                        <outpost clone>/.dry-run/ (gitignored), default: mission
+                        --verbose: list every created file
+  outpost help          show this help
+EOF
+}
+
+# copy_tree <src_dir> <dest_dir> [skip_private]
+# Copies every file that does not already exist at the destination. Never overwrites.
+copy_tree() {
+  local from="$1" to="$2" skip_private="${3:-}" rel
+  while IFS= read -r rel; do
+    rel="${rel#./}"
+    if [ -n "$skip_private" ]; then
+      case "$rel" in *.private.md) continue ;; esac
+    fi
+    if [ -e "$to/$rel" ]; then
+      continue
+    fi
+    mkdir -p "$(dirname "$to/$rel")"
+    cp "$from/$rel" "$to/$rel"
+    CREATED+=("$to/$rel")
+  done < <(cd "$from" && find . -type f | LC_ALL=C sort)
+}
+
+write_if_missing() { # <path> ; content on stdin
+  if [ -e "$1" ]; then cat >/dev/null; return 0; fi
+  mkdir -p "$(dirname "$1")"
+  cat > "$1"
+  CREATED+=("$1")
+}
+
+init_notes() {
+  local notes="$1" agent="$2" have_crypt=0 gitdir
+  command -v git-crypt >/dev/null 2>&1 && have_crypt=1
+
+  mkdir -p "$notes"
+
+  # 1. git repo (never reuse a parent repo: notes/ gets its own).
+  if [ ! -d "$notes/.git" ]; then
+    git init -q "$notes"
+    ok "git repository initialised"
+  else
+    ok "git repository"
+  fi
+  gitdir=$(git -C "$notes" rev-parse --absolute-git-dir)
+
+  # 2. pre-commit hook (installed first so nothing private slips in later).
+  local hook="$gitdir/hooks/pre-commit"
+  mkdir -p "$gitdir/hooks"
+  if [ ! -e "$hook" ]; then
+    cp "$TEMPLATES/hooks/pre-commit" "$hook"; chmod +x "$hook"
+    ok "pre-commit hook installed (blocks unencrypted *.private.md)"
+  elif ! cmp -s "$TEMPLATES/hooks/pre-commit" "$hook"; then
+    warn "a different pre-commit hook already exists in $hook; private-file check NOT installed"
+  else
+    ok "pre-commit hook"
+  fi
+
+  # 3. git-crypt, only on a repo that has no history yet.
+  if [ ! -d "$gitdir/git-crypt/keys" ]; then
+    # Safe to init as long as no private file was ever committed.
+    if [ "$have_crypt" = 1 ] && [ -z "$(git -C "$notes" ls-files '*.private.md')" ]; then
+      (cd "$notes" && git-crypt init >/dev/null)
+      ok "git-crypt initialised"
+    elif [ "$have_crypt" = 0 ]; then
+      warn "git-crypt not found: private files skipped and blocked. Install it, then re-run 'outpost init'"
+    else
+      warn "this repo has history but no git-crypt key: run 'git-crypt unlock <keyfile>'"
+    fi
+  fi
+
+  if [ -d "$gitdir/git-crypt/keys" ] && [ "$have_crypt" = 1 ]; then
+    ok "git-crypt ready"
+  fi
+
+  # 4. .gitattributes, committed BEFORE any private file exists.
+  write_if_missing "$notes/.gitattributes" <<'EOF'
+*.private.md filter=git-crypt diff=git-crypt
+EOF
+  if [ "${#CREATED[@]}" -gt 0 ] && [ -f "$notes/.gitattributes" ] \
+     && [ -z "$(git -C "$notes" ls-files .gitattributes)" ]; then
+    git -C "$notes" add .gitattributes
+    git -C "$notes" commit -q -m "outpost: git-crypt attributes" \
+      || warn "could not commit .gitattributes (git user.name/user.email set?)"
+  fi
+
+  # 5. skeleton: never overwrites. Private templates only if git-crypt is ready.
+  local skip=""
+  [ -d "$gitdir/git-crypt/keys" ] || skip=1
+  local before=${#CREATED[@]}
+  copy_tree "$TEMPLATES/notes" "$notes" "$skip"
+  # Agent-specific entry point (copilot reads AGENTS.md directly).
+  [ -d "$TEMPLATES/agents/$agent" ] && copy_tree "$TEMPLATES/agents/$agent" "$notes" "$skip"
+
+  # 6. commit only what this run created.
+  if [ "${#CREATED[@]}" -gt "$before" ]; then
+    local f
+    for f in "${CREATED[@]:$before}"; do git -C "$notes" add -- "$f"; done
+    if ! git -C "$notes" diff --cached --quiet; then
+      git -C "$notes" commit -q -m "outpost: notes skeleton" \
+        || warn "could not commit the notes skeleton (git user.name/user.email set?)"
+    fi
+  fi
+}
+
+cmd_init() {
+  local target="" agent="" saved="" dry=0 root
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --agent)   [ "$#" -ge 2 ] || die "--agent needs a value (copilot|claude)"; agent="$2"; shift 2 ;;
+      --agent=*) agent="${1#--agent=}"; shift ;;
+      --dry-run) dry=1; shift ;;
+      --verbose) VERBOSE=1; shift ;;
+      -*)        die "unknown option: $1" ;;
+      *)         target="$1"; shift ;;
+    esac
+  done
+  case "$agent" in ""|copilot|claude) ;; *) die "unknown agent '$agent' (supported: copilot, claude)" ;; esac
+  if [ "$dry" = 1 ]; then
+    # The path is a folder NAME under .dry-run/ (gitignored), never a real location.
+    target="${target:-mission}"
+    case "$target" in
+      /*|..|../*|*/..|*/../*) die "--dry-run takes a relative folder name (created under .dry-run/), got '$target'" ;;
+    esac
+    target="$OUTPOST_HOME/.dry-run/$target"
+  else
+    target="${target:-.}"
+  fi
+  mkdir -p "$target"
+  root=$(cd "$target" && pwd -P)
+  MISSION_ROOT="$root"
+  trap '[ "$?" -eq 0 ] || rmdir "$MISSION_ROOT" 2>/dev/null || true' EXIT
+  case "$root/" in
+    "$OUTPOST_HOME/.dry-run/"*) [ "$dry" = 1 ] || die "$OUTPOST_HOME/.dry-run is reserved for --dry-run" ;;
+    "$OUTPOST_HOME"/*) die "the mission root must be outside the Outpost clone ($OUTPOST_HOME)" ;;
+  esac
+  case "$OUTPOST_HOME/" in
+    "$root"/*) die "the Outpost clone must be outside the mission root ($root)" ;;
+  esac
+
+  if [ -f "$root/.outpost.conf" ]; then
+    saved=$(sed -n 's/^agent=//p' "$root/.outpost.conf" | head -n 1)
+  fi
+  # Explicit flag wins, then the saved choice, then the default.
+  agent="${agent:-${saved:-copilot}}"
+  case "$agent" in copilot|claude) ;; *) die "invalid agent '$agent' in $root/.outpost.conf" ;; esac
+  [ "$agent" = "$saved" ] || printf 'agent=%s\n' "$agent" > "$root/.outpost.conf"
+
+  local tag=""
+  [ "$dry" = 1 ] && tag=" ${Y}[dry-run]${N}"
+  say "${I_START} ${B}Outpost $VERSION${N} ${D}init${N}$tag"
+  say "   ${D}mission root${N}  $root"
+  say "   ${D}agent${N}         $agent"
+  say ""
+  local d n
+  for d in workspace resources outbox sandbox; do
+    n=${#CREATED[@]}
+    mkdir -p "$root/$d"
+    copy_tree "$TEMPLATES/$d" "$root/$d"
+    summary "$d/" "$n"
+  done
+  n=${#CREATED[@]}
+  say "$I_NOTES ${B}notes/${N}"
+  init_notes "$root/notes" "$agent"
+  summary "notes files" "$n"
+
+  say ""
+  if [ "${#CREATED[@]}" -eq 0 ]; then
+    say "$I_DONE ${B}Nothing to do${N}: layout already complete."
+  else
+    say "$I_DONE ${B}Done${N}: ${#CREATED[@]} file(s) created."
+  fi
+  [ "${#WARNINGS[@]}" -eq 0 ] || say "$Y$I_WARN ${#WARNINGS[@]} warning(s), see above$N"
+  cat <<TXT
+
+${I_NEXT} ${B}Next steps${N}
+  1. Shell profile:
+       export NOTES="$root/notes"
+       source "$OUTPOST_HOME/shell/notes.sh"
+  2. Back up the git-crypt key OUTSIDE the repo, then delete the export:
+       cd "$root/notes" && git-crypt export-key /tmp/notes.key
+       (copy it to your password manager, then: rm /tmp/notes.key)
+  3. Friday review (manual): open your agent in notes/ and have it follow
+       $OUTPOST_HOME/prompts/weekly-review.md
+  4. Push notes/ to a private repo of the client git, once security confirms
+     that encrypted content is accepted.
+TXT
+}
+
+case "${1:-help}" in
+  init) shift; cmd_init "$@" ;;
+  help|-h|--help) usage ;;
+  -v|--version|version) say "$VERSION" ;;
+  *) usage >&2; exit 2 ;;
+esac
