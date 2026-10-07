@@ -1,0 +1,4 @@
+{
+  "foam.openDailyNote.directory": "daily",
+  "foam.openDailyNote.onStartup": true
+}
