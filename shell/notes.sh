@@ -1,25 +1,19 @@
 # Outpost quick capture. Add to ~/.bashrc or ~/.zshrc:
-#   export NOTES=/path/to/mission/notes
 #   source /path/to/outpost/shell/notes.sh
 #
-#   n  "text"   -> "- HH:MM text" in today's public daily note
+#   n  "text"   -> note in today's public daily note
 #   np "text"   -> same, in today's private daily note
+#
+# Both call `outpost note`, which finds the mission from the current folder
+# (or from $NOTES when you are outside any mission).
 
-_notes_append() { # $1 = "" or ".private", $2 = text
-  if [ -z "${NOTES:-}" ] || [ ! -d "$NOTES" ]; then
-    echo "NOTES must point to the notes folder" >&2; return 1
-  fi
-  if [ -z "$2" ]; then echo "usage: n[p] \"text\"" >&2; return 1; fi
-  _d=$(date +%F); _f="$NOTES/daily/$_d$1.md"
-  mkdir -p "$NOTES/daily"
-  if [ ! -f "$_f" ]; then
-    if [ -f "$NOTES/templates/daily$1.md" ]; then
-      sed "s/{{date}}/$_d/g" "$NOTES/templates/daily$1.md" > "$_f"
-    else
-      printf '# %s\n\n' "$_d" > "$_f"
-    fi
-  fi
-  printf -- '- %s %s\n' "$(date +%H:%M)" "$2" >> "$_f"
-}
-n()  { _notes_append ""         "$*"; }
-np() { _notes_append ".private" "$*"; }
+if [ -n "${BASH_VERSION:-}" ]; then
+  _outpost_src="${BASH_SOURCE[0]}"
+elif [ -n "${ZSH_VERSION:-}" ]; then
+  eval '_outpost_src="${(%):-%x}"'
+fi
+_OUTPOST_BIN="$(cd "$(dirname "$_outpost_src")/.." && pwd)/outpost"
+unset _outpost_src
+
+n()  { printf '%s\n' "$*" | "$_OUTPOST_BIN" note; }
+np() { printf '%s\n' "$*" | "$_OUTPOST_BIN" note --private; }

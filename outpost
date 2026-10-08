@@ -18,6 +18,7 @@ CREATED=()   # absolute paths of files created during this run
 WARNINGS=()
 
 VERBOSE=0
+DEFAULT_NOTES=""
 
 # Colors only on a real terminal (NO_COLOR respected); emoji only on a UTF-8 locale.
 if [ -t 1 ] && [ -z "${NO_COLOR:-}" ] && [ "${TERM:-dumb}" != dumb ]; then
@@ -27,9 +28,9 @@ else
 fi
 case "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" in
   *[Uu][Tt][Ff]-8*|*[Uu][Tt][Ff]8*)
-    I_START="🛰 "; I_DIR="📁"; I_NOTES="📝"; I_OK="✔"; I_WARN="⚠"; I_DOT="·"; I_DONE="✅"; I_NEXT="👉" ;;
+    I_START="🛰 "; I_SKILL="🧩"; I_SHELL="🐚"; I_DIR="📁"; I_NOTES="📝"; I_OK="✔"; I_WARN="⚠"; I_DOT="·"; I_DONE="✅"; I_NEXT="👉" ;;
   *)
-    I_START=">>"; I_DIR="[+]"; I_NOTES="[n]"; I_OK="ok"; I_WARN="!!"; I_DOT="-"; I_DONE="OK"; I_NEXT="->" ;;
+    I_START=">>"; I_SKILL="[s]"; I_SHELL="[p]"; I_DIR="[+]"; I_NOTES="[n]"; I_OK="ok"; I_WARN="!!"; I_DOT="-"; I_DONE="OK"; I_NEXT="->" ;;
 esac
 
 say()  { printf '%s\n' "$*"; }
@@ -61,6 +62,11 @@ Usage:
                         --dry-run: path is a folder name created under
                         <outpost clone>/.dry-run/ (gitignored), default: mission
                         --verbose: list every created file
+                        --no-skill: do not install the note skill for the agent
+                        --no-profile: do not touch the shell profile (NOTES, n, np)
+                        (dry-run installs it under <mission>/.fake-home)
+  outpost note [--private] [--tags "type/idea topic/x"]
+                        append a note (text on stdin) to today's daily note
   outpost help          show this help
 EOF
 }
@@ -138,10 +144,9 @@ init_notes() {
   write_if_missing "$notes/.gitattributes" <<'EOF'
 *.private.md filter=git-crypt diff=git-crypt
 EOF
-  if [ "${#CREATED[@]}" -gt 0 ] && [ -f "$notes/.gitattributes" ] \
-     && [ -z "$(git -C "$notes" ls-files .gitattributes)" ]; then
+  if [ -f "$notes/.gitattributes" ] && ! git -C "$notes" cat-file -e HEAD:.gitattributes 2>/dev/null; then
     git -C "$notes" add .gitattributes
-    git -C "$notes" commit -q -m "outpost: git-crypt attributes" \
+    git -C "$notes" commit -q -m "outpost: git-crypt attributes" -- .gitattributes \
       || warn "could not commit .gitattributes (git user.name/user.email set?)"
   fi
 
@@ -153,25 +158,33 @@ EOF
   # Agent-specific entry point (copilot reads AGENTS.md directly).
   [ -d "$TEMPLATES/agents/$agent" ] && copy_tree "$TEMPLATES/agents/$agent" "$notes" "$skip"
 
-  # 6. commit only what this run created.
-  if [ "${#CREATED[@]}" -gt "$before" ]; then
-    local f
-    for f in "${CREATED[@]:$before}"; do git -C "$notes" add -- "$f"; done
-    if ! git -C "$notes" diff --cached --quiet; then
-      git -C "$notes" commit -q -m "outpost: notes skeleton" \
-        || warn "could not commit the notes skeleton (git user.name/user.email set?)"
-    fi
+  # 6. commit the skeleton files that are not tracked yet. Only files that come from the
+  #    templates are considered, so a failed commit on a previous run heals itself and
+  #    your own files are never swept in.
+  local rel pending=()
+  while IFS= read -r rel; do
+    rel="${rel#./}"
+    [ -z "$skip" ] || case "$rel" in *.private.md) continue ;; esac
+    [ -f "$notes/$rel" ] || continue
+    git -C "$notes" cat-file -e "HEAD:$rel" 2>/dev/null && continue
+    git -C "$notes" add -- "$rel"; pending+=("$rel")
+  done < <({ (cd "$TEMPLATES/notes" && find . -type f); [ ! -d "$TEMPLATES/agents/$agent" ] || (cd "$TEMPLATES/agents/$agent" && find . -type f); } | LC_ALL=C sort)
+  if [ "${#pending[@]}" -gt 0 ]; then
+    git -C "$notes" commit -q -m "outpost: notes skeleton" -- "${pending[@]}" \
+      || warn "could not commit the notes skeleton (git user.name/user.email set?)"
   fi
 }
 
 cmd_init() {
-  local target="" agent="" saved="" dry=0 root
+  local target="" agent="" saved="" dry=0 skill=1 profile=1 root
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --agent)   [ "$#" -ge 2 ] || die "--agent needs a value (copilot|claude)"; agent="$2"; shift 2 ;;
       --agent=*) agent="${1#--agent=}"; shift ;;
       --dry-run) dry=1; shift ;;
       --verbose) VERBOSE=1; shift ;;
+      --no-skill) skill=0; shift ;;
+      --no-profile) profile=0; shift ;;
       -*)        die "unknown option: $1" ;;
       *)         target="$1"; shift ;;
     esac
@@ -224,6 +237,23 @@ cmd_init() {
   say "$I_NOTES ${B}notes/${N}"
   init_notes "$root/notes" "$agent"
   summary "notes files" "$n"
+  if [ "$skill" = 1 ]; then
+    say "$I_SKILL ${B}note skill${N} ${D}(outside the mission root, in your user folder)${N}"
+    if [ "$dry" = 1 ]; then
+      install_skill "$agent" "$root/.fake-home" "$root/notes"
+    else
+      install_skill "$agent" "$HOME" "$root/notes"
+    fi
+  fi
+
+  if [ "$profile" = 1 ]; then
+    say "$I_SHELL ${B}shell profile${N} ${D}(outside the mission root, in your home)${N}"
+    if [ "$dry" = 1 ]; then
+      install_profile "$root/.fake-home" "$root/notes"
+    else
+      install_profile "$HOME" "$root/notes"
+    fi
+  fi
 
   say ""
   if [ "${#CREATED[@]}" -eq 0 ]; then
@@ -232,24 +262,234 @@ cmd_init() {
     say "$I_DONE ${B}Done${N}: ${#CREATED[@]} file(s) created."
   fi
   [ "${#WARNINGS[@]}" -eq 0 ] || say "$Y$I_WARN ${#WARNINGS[@]} warning(s), see above$N"
+  local step=0
+  say ""
+  say "${I_NEXT} ${B}Next steps${N}"
+  if [ -n "$PROFILE_RC" ]; then
+    step=$((step + 1)); say "  $step. Open a new terminal (or: source $PROFILE_RC) to get NOTES, n and np."
+  else
+    step=$((step + 1)); say "  $step. Add to your shell profile:"
+    if [ -n "$PROFILE_MANUAL" ]; then
+      printf '%s\n' "$PROFILE_MANUAL" | sed 's/^/       /'
+    else
+      say "       export NOTES=\"$root/notes\""
+      say "       source \"$OUTPOST_HOME/shell/notes.sh\""
+    fi
+  fi
   cat <<TXT
-
-${I_NEXT} ${B}Next steps${N}
-  1. Shell profile:
-       export NOTES="$root/notes"
-       source "$OUTPOST_HOME/shell/notes.sh"
-  2. Back up the git-crypt key OUTSIDE the repo, then delete the export:
+  $((step + 1)). Back up the git-crypt key OUTSIDE the repo, then delete the export:
        cd "$root/notes" && git-crypt export-key /tmp/notes.key
        (copy it to your password manager, then: rm /tmp/notes.key)
-  3. Friday review (manual): open your agent in notes/ and have it follow
+  $((step + 2)). Friday review (manual): open your agent in notes/ and have it follow
        $OUTPOST_HOME/prompts/weekly-review.md
-  4. Push notes/ to a private repo of the client git, once security confirms
+  $((step + 3)). Push notes/ to a private repo of the client git, once security confirms
      that encrypted content is accepted.
 TXT
 }
 
+# install_skill <agent> <home>: the note skill, same SKILL.md for both agents.
+# The file is owned by Outpost only while it carries the "managed by outpost" marker.
+install_skill() {
+  local agent="$1" base="$2" notes_dir="$3" dir rel tmp bin nd shown
+  case "$agent" in
+    claude)  rel=".claude/skills/outpost-note" ;;
+    copilot) rel=".copilot/skills/outpost-note" ;;
+  esac
+  dir="$base/$rel"
+  shown="${dir/#"$HOME"/\~}"
+  bin="$OUTPOST_HOME/outpost"; bin=${bin//\\/\\\\}; bin=${bin//&/\\&}; bin=${bin//|/\\|}
+  nd="$notes_dir"; nd=${nd//\\/\\\\}; nd=${nd//&/\\&}; nd=${nd//|/\\|}
+  tmp=$(mktemp)
+  sed "s|{{OUTPOST_BIN}}|$bin|g; s|{{NOTES_DIR}}|$nd|g" "$OUTPOST_HOME/prompts/skills/outpost-note/SKILL.md" > "$tmp"
+  if [ ! -e "$dir/SKILL.md" ]; then
+    mkdir -p "$dir"; cp "$tmp" "$dir/SKILL.md"
+    ok "note skill installed: $shown"
+  elif ! grep -q 'managed by outpost' "$dir/SKILL.md"; then
+    warn "$shown/SKILL.md exists and is not managed by outpost: left untouched"
+  elif ! cmp -s "$tmp" "$dir/SKILL.md"; then
+    cp "$tmp" "$dir/SKILL.md"
+    ok "note skill updated: $shown"
+  else
+    ok "note skill: $shown"
+  fi
+  rm -f "$tmp"
+}
+
+# install_profile <home> <notes_dir>: managed block in the shell profile (NOTES + n/np).
+# Only the lines between the two markers belong to Outpost; the rest of the file is untouched.
+PROFILE_RC=""      # profile file handled by this run (empty if unsupported)
+PROFILE_MANUAL=""  # lines to add by hand when the shell is not supported
+install_profile() {
+  local base="$1" notes_dir="$2" sh rc shown q_notes q_src line inblock=0 found=0 tmp
+  local begin='# >>> outpost >>> (managed by outpost: re-running init rewrites this block)'
+  local end='# <<< outpost <<<'
+  q_notes="'${notes_dir//\'/\'\\\'\'}'"
+  q_src="'${OUTPOST_HOME//\'/\'\\\'\'}/shell/notes.sh'"
+  PROFILE_MANUAL="export NOTES=$q_notes
+source $q_src"
+
+  sh="${SHELL##*/}"
+  case "$sh" in
+    zsh)  rc="$base/.zshrc" ;;
+    bash) if [ "$(uname)" = Darwin ]; then rc="$base/.bash_profile"; else rc="$base/.bashrc"; fi ;;
+    *)    warn "shell '${sh:-unknown}' is not supported (bash or zsh): add these lines to your profile yourself"
+          return 0 ;;
+  esac
+  shown="${rc/#"$HOME"/\~}"
+
+  tmp=$(mktemp)
+  if [ -f "$rc" ]; then
+    while IFS= read -r line || [ -n "$line" ]; do
+      if [ "$inblock" = 0 ] && [ "${line:0:14}" = "# >>> outpost " ]; then
+        inblock=1; found=1
+        printf '%s\n%s\n%s\n%s\n' "$begin" "export NOTES=$q_notes" "source $q_src" "$end" >> "$tmp"
+      elif [ "$inblock" = 1 ]; then
+        [ "$line" = "$end" ] && inblock=0
+      else
+        printf '%s\n' "$line" >> "$tmp"
+      fi
+    done < "$rc"
+    if [ "$inblock" = 1 ]; then
+      rm -f "$tmp"; warn "$shown has an unterminated outpost block: left untouched"; return 0
+    fi
+  fi
+  if [ "$found" = 0 ]; then
+    [ ! -s "$tmp" ] || [ -z "$(tail -n1 "$tmp")" ] || printf '\n' >> "$tmp"
+    printf '%s\n%s\n%s\n%s\n' "$begin" "export NOTES=$q_notes" "source $q_src" "$end" >> "$tmp"
+  fi
+
+  PROFILE_RC="$shown"
+  if [ ! -f "$rc" ]; then
+    mkdir -p "$(dirname "$rc")"; cat "$tmp" > "$rc"; ok "shell profile created: $shown (NOTES, n, np)"
+  elif ! cmp -s "$tmp" "$rc"; then
+    cat "$tmp" > "$rc"
+    if [ "$found" = 1 ]; then ok "shell profile updated: $shown (NOTES, n, np)"; else ok "shell profile: block added to $shown (NOTES, n, np)"; fi
+  else
+    ok "shell profile: $shown"
+  fi
+  rm -f "$tmp"
+}
+
+# --- outpost note -----------------------------------------------------------
+
+# Nearest mission above $PWD (a folder holding .outpost.conf and notes/), else $NOTES,
+# else the notes folder baked into the skill at install time (DEFAULT_NOTES).
+find_notes_dir() {
+  local d="$PWD"
+  while :; do
+    if [ -f "$d/.outpost.conf" ] && [ -d "$d/notes" ]; then printf '%s\n' "$d/notes"; return 0; fi
+    [ "$d" = "/" ] && break
+    d=$(dirname "$d")
+  done
+  if [ -n "${NOTES:-}" ] && [ -d "$NOTES" ]; then printf '%s\n' "$NOTES"; return 0; fi
+  if [ -n "${DEFAULT_NOTES:-}" ] && [ -d "$DEFAULT_NOTES" ]; then printf '%s\n' "$DEFAULT_NOTES"; return 0; fi
+  return 1
+}
+
+# fences_balanced: reads text on stdin; fails if a ``` or ~~~ block is left open.
+fences_balanced() {
+  local line t c n rest open_c="" open_n=0
+  while IFS= read -r line || [ -n "$line" ]; do
+    t="${line#"${line%%[![:space:]]*}"}"
+    case "$t" in '```'*) c='`' ;; '~~~'*) c='~' ;; *) continue ;; esac
+    n=0; rest="$t"
+    while [ "${rest:0:1}" = "$c" ]; do n=$((n + 1)); rest="${rest:1}"; done
+    if [ -z "$open_c" ]; then
+      # An inline ```code``` span on one line is not a fence.
+      if [ "$c" = '`' ]; then case "$rest" in *'`'*) continue ;; esac; fi
+      open_c="$c"; open_n=$n
+    elif [ "$c" = "$open_c" ] && [ "$n" -ge "$open_n" ] && [ -z "${rest//[[:space:]]/}" ]; then
+      open_c=""
+    fi
+  done
+  [ -z "$open_c" ]
+}
+
+# make_tags "type/idea, topic/x": keeps letters, digits, _ - /, prefixes each with #.
+make_tags() {
+  local out="" t
+  set -f
+  for t in $1; do
+    t="${t#\#}"
+    t=$(printf '%s' "$t" | sed 's|[^[:alnum:]_/-]|-|g; s|--*|-|g; s|^[-/]*||; s|[-/]*$||')
+    [ -n "$t" ] && out="$out #$t"
+  done
+  set +f
+  printf '%s' "${out# }"
+}
+
+cmd_note() {
+  local private="" tags="" body="" notes d hm suffix file tpl gitdir lastnb first
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --private) private=1; shift ;;
+      --tags)    [ "$#" -ge 2 ] || die "--tags needs a value"; tags="$2"; shift 2 ;;
+      --tags=*)  tags="${1#--tags=}"; shift ;;
+      --default-notes) [ "$#" -ge 2 ] || die "--default-notes needs a folder"; DEFAULT_NOTES="$2"; shift 2 ;;
+      -*)        die "unknown option: $1" ;;
+      *)         body="${body:+$body }$1"; shift ;;
+    esac
+  done
+  if [ -z "$body" ]; then
+    [ ! -t 0 ] || die "usage: outpost note [--private] [--tags \"type/idea topic/x\"] < text"
+    body=$(cat)
+  fi
+
+  # Normalize: no CR, no trailing spaces, no leading blank lines.
+  body=$(printf '%s\n' "$body" | sed $'s/\r$//; s/[[:space:]]*$//')
+  body="${body#"${body%%[![:space:]]*}"}"
+  [ -n "$body" ] || die "empty note"
+  case "$body" in
+    *'<!-- note'*|*'<!-- /note'*) die "the text must not contain a note marker (<!-- note / <!-- /note -->)" ;;
+  esac
+  fences_balanced <<<"$body" || die "unclosed code fence (\`\`\` or ~~~) in the text"
+
+  notes=$(find_notes_dir) || die "no mission found from $PWD: run inside a mission folder, set NOTES, or re-run 'outpost init' to refresh the skill"
+  suffix=""
+  if [ -n "$private" ]; then
+    suffix=".private"
+    gitdir=$(git -C "$notes" rev-parse --absolute-git-dir 2>/dev/null) || die "notes/ is not a git repository"
+    [ -d "$gitdir/git-crypt/keys" ] || die "git-crypt is not ready (not initialised or locked): refusing to write a private note"
+  fi
+
+  d="${OUTPOST_DATE:-$(date +%F)}"; hm="${OUTPOST_TIME:-$(date +%H:%M)}"
+  file="$notes/daily/$d$suffix.md"
+  mkdir -p "$notes/daily"
+  if [ ! -f "$file" ]; then
+    tpl="$notes/templates/daily$suffix.md"
+    if [ -f "$tpl" ]; then
+      sed "s/{{date}}/$d/g" "$tpl" > "$file"
+    else
+      printf '# %s%s\n\n' "$d" "${private:+ (private)}" > "$file"
+    fi
+  fi
+
+  # Separator logic: exactly one --- between notes, always after a blank line.
+  [ -z "$(tail -c1 "$file")" ] || printf '\n' >> "$file"
+  [ -z "$(tail -n1 "$file" | tr -d '[:space:]')" ] || printf '\n' >> "$file"
+  lastnb=$(grep -v '^[[:space:]]*$' "$file" | tail -n 1 || true)
+  [ "$lastnb" = "---" ] || printf -- '---\n\n' >> "$file"
+
+  tags=$(make_tags "$tags")
+  first="${body%%$'\n'*}"
+  {
+    printf '<!-- note %s -->\n' "$hm"
+    # A first line that is itself block syntax keeps the time on its own line.
+    if printf '%s' "$first" | grep -Eq '^(```|~~~|#|[-*+>]|[0-9]+[.)]|\|)'; then
+      printf '**%s**\n\n%s\n' "$hm" "$body"
+    else
+      printf '**%s** · %s\n' "$hm" "$body"
+    fi
+    [ -z "$tags" ] || printf '\n%s\n' "$tags"
+    printf '<!-- /note -->\n\n---\n'
+  } >> "$file"
+
+  printf '%s%s%s note added to %s%s\n' "$G" "$I_OK" "$N" "${file#"${notes%/notes}"/}" "${private:+ (private)}"
+}
+
 case "${1:-help}" in
   init) shift; cmd_init "$@" ;;
+  note) shift; cmd_note "$@" ;;
   help|-h|--help) usage ;;
   -v|--version|version) say "$VERSION" ;;
   *) usage >&2; exit 2 ;;

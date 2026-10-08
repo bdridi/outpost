@@ -64,7 +64,7 @@ ln -s ~/outpost/outpost ~/.local/bin/outpost
 ## 🧭 Usage
 
 ```sh
-outpost init [path] [--agent copilot|claude] [--dry-run] [--verbose]
+outpost init [path] [--agent copilot|claude] [--dry-run] [--verbose] [--no-skill] [--no-profile]
 ```
 
 | Option | Effect |
@@ -73,6 +73,8 @@ outpost init [path] [--agent copilot|claude] [--dry-run] [--verbose]
 | `--agent` | Local agent for the notes, default `copilot`. `claude` also adds `notes/CLAUDE.md` (it imports `AGENTS.md`). Saved in `<mission-root>/.outpost.conf`, outside the client git, and reused on re-runs |
 | `--dry-run` | `path` becomes a folder **name** created under `.dry-run/` (gitignored). No absolute path, no `..` |
 | `--verbose` | List every created file |
+| `--no-profile` | Do not touch your shell profile (see [Quick capture](#-quick-capture)) |
+| `--no-skill` | Do not install the note skill (see [Capture from your agent](#-capture-from-your-agent)) |
 
 `init` is **idempotent**: it creates what is missing and never overwrites anything.
 
@@ -88,19 +90,71 @@ and re-running `outpost init` after installing it completes the setup.
 
 ## ⚡ Quick capture
 
-```sh
-export NOTES=/path/to/mission/notes
-source ~/outpost/shell/notes.sh
+`init` adds a block to your shell profile (`~/.zshrc`, or `~/.bash_profile` / `~/.bashrc` for bash),
+so `NOTES`, `n` and `np` are available in every new terminal:
 
-n  "text"    # "- HH:MM text" in today's public daily note
+```sh
+# >>> outpost >>> (managed by outpost: re-running init rewrites this block)
+export NOTES='/path/to/mission/notes'
+source '/path/to/outpost/shell/notes.sh'
+# <<< outpost <<<
+```
+
+Only the lines between the markers belong to Outpost; the rest of the file is never touched, and a
+re-run rewrites the block in place (the last initialized mission wins). Other shells get the two lines
+to add by hand, and `--no-profile` skips all of it.
+
+```sh
+n  "text"    # note in today's public daily note
 np "text"    # same, in today's private daily note
 ```
 
 In VS Code with Foam, `Alt+D` opens today's daily note.
 
+## 🤖 Capture from your agent
+
+Mid-conversation with Copilot or Claude Code, say *"note ça"* (or *"note this in the daily"*).
+The agent drafts the note from the conversation (reformulated, with context), proposes tags and asks
+**public or private**. Once you validate, it writes it to today's daily note, without leaving the
+session and without you switching to a terminal.
+
+`init` installs one skill (`outpost-note`, the open `SKILL.md` format) in your **user folder**, for the
+chosen agent: `~/.claude/skills/` for Claude Code, `~/.copilot/skills/` for Copilot. Together with the shell profile block, it is the only
+thing `init` writes outside the mission root, and `--no-skill` skips it. The file carries a
+`managed by outpost` marker: `init` updates it while the marker is there, and leaves it alone once you
+remove it (or if a file of yours already exists).
+
+Under the hood the skill calls `outpost note`, which finds the mission from the current folder:
+
+```sh
+outpost note [--private] [--tags "type/idea topic/search"] <<'EOF'
+Text, Markdown allowed.
+EOF
+```
+
+`n` and `np` use the same command, so every capture has the same shape:
+
+```markdown
+---
+
+<!-- note 14:32 -->
+**14:32** · Text, Markdown allowed.
+
+#type/decision #topic/search
+<!-- /note -->
+
+---
+```
+
+One `---` between notes, explicit start and end markers for the weekly review, tags optional with an
+open vocabulary. You can still write freely in the daily note by hand; the review handles both.
+The command refuses an empty note, an unclosed code fence, a note marker inside the text, and a
+private note when git-crypt is not ready.
+
 ## 📅 Weekly review
 
-Launched **manually** on Fridays (no scheduler, nothing leaves the machine):
+The review reads the structured notes, free text and old `- HH:MM` lines, and skips what is already linked
+(`→ [[note]]`). Launched **manually** on Fridays (no scheduler, nothing leaves the machine):
 
 1. Open your agent (Copilot or Claude Code) in `<mission-root>/notes/`.
 2. Ask it to follow [`prompts/weekly-review.md`](prompts/weekly-review.md) from this repo.
@@ -140,6 +194,14 @@ in `*.private.md`; links go private → public only; use neutral file names.
 
 Generates the full instance in `.dry-run/my-test` so you can inspect it. Re-running is idempotent;
 reset with `rm -rf .dry-run/my-test`.
+
+## 🧪 Tests
+
+```sh
+tests/note.sh     # outpost note, n / np
+tests/skill.sh    # skill installation (uses a temporary HOME, never your real one)
+tests/profile.sh  # shell profile block (temporary HOME as well)
+```
 
 ## 🛣️ Later
 
