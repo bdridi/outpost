@@ -13,10 +13,10 @@ fail() { FAIL=$((FAIL + 1)); printf '  FAIL  %s\n' "$1"; }
 t()    { if eval "$2"; then ok "$1"; else fail "$1"; fi; }
 
 snapshot() { # mission tree, notes git history and status, home
-  ( cd "$1" && find . -type f -not -path './notes/.git/*' | LC_ALL=C sort | xargs shasum
+  ( cd "$1" && find . -type f -not -path './notes/.git/*' | LC_ALL=C sort | xargs cksum
     git -C notes log --format='%s' | sort
     git -C notes status --short
-    cd "$HOME" && find . -type f | LC_ALL=C sort | xargs shasum )
+    cd "$HOME" && find . -type f | LC_ALL=C sort | xargs cksum )
 }
 release() { # <version>: commit the upstream working tree and tag it
   sed -i.bak "s/^VERSION=.*/VERSION=\"$1\"/" "$SRC/outpost" && rm -f "$SRC/outpost.bak"
@@ -48,7 +48,7 @@ printf 'my note\n' | (cd "$M" && "$O" note) >/dev/null
 echo "secret" > "$M/notes/topics/x.private.md"
 echo "mine" > "$M/workspace/README.md"
 git -C "$M/notes" add daily && git -C "$M/notes" commit -q -m "my daily" -- daily
-BEFORE_USER=$(cd "$M" && shasum notes/context/mission.md notes/daily/2026-10-07.md notes/topics/x.private.md workspace/README.md)
+BEFORE_USER=$(cd "$M" && cksum notes/context/mission.md notes/daily/2026-10-07.md notes/topics/x.private.md workspace/README.md)
 
 echo "release v1.1.0, then update"
 printf '\nRule added in 1.1.\n' >> "$SRC/templates/_outpost/notes/AGENTS.md"
@@ -62,7 +62,7 @@ t "_outpost/ regenerated" '[ "$(cat "$M/_outpost/VERSION")" = 1.1.0 ] && grep -q
 t "no leftover build folder" '[ ! -e "$M/_outpost.new" ]'
 t "foam template follows daily.md" 'grep -q "Daily layout 1.1" "$M/notes/.foam/templates/daily-note.md"'
 t "new user folder added" '[ -f "$M/notes/retro/.gitkeep" ]'
-t "user files untouched" '[ "$(cd "$M" && shasum notes/context/mission.md notes/daily/2026-10-07.md notes/topics/x.private.md workspace/README.md)" = "$BEFORE_USER" ]'
+t "user files untouched" '[ "$(cd "$M" && cksum notes/context/mission.md notes/daily/2026-10-07.md notes/topics/x.private.md workspace/README.md)" = "$BEFORE_USER" ]'
 t "one commit, outpost files only" '[ "$(git -C "$M/notes" log -1 --format=%s)" = "outpost: notes v1.1.0" ] && [ "$(git -C "$M/notes" show --name-only --format= HEAD | LC_ALL=C sort | tr "\n" " ")" = ".foam/templates/daily-note.md retro/.gitkeep " ]'
 t "your pending edits stay uncommitted" 'git -C "$M/notes" status --short | grep -q "context/mission.md"'
 t "saved --no-profile respected" '[ ! -e "$HOME/.zshrc" ]'

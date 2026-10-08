@@ -22,6 +22,14 @@ CMD=init     # init or update (only changes the messages)
 VERBOSE=0
 DEFAULT_NOTES=""
 
+# Platform, detected (OUTPOST_OS only lets the tests simulate another one). On Windows, Outpost
+# runs in Git Bash (Git for Windows), whose uname is MINGW64_NT-..., MSYS_NT-... or CYGWIN_NT-...
+case "${OUTPOST_OS:-$(uname -s)}" in
+  MINGW*|MSYS*|CYGWIN*|windows) OS=windows ;;
+  Darwin|mac)                   OS=mac ;;
+  *)                            OS=linux ;;
+esac
+
 # Colors only on a real terminal (NO_COLOR respected); emoji only on a UTF-8 locale.
 if [ -t 1 ] && [ -z "${NO_COLOR:-}" ] && [ "${TERM:-dumb}" != dumb ]; then
   B=$'\033[1m'; D=$'\033[2m'; G=$'\033[32m'; Y=$'\033[33m'; R=$'\033[31m'; N=$'\033[0m'
@@ -205,8 +213,9 @@ EOF
 # sync_outpost <mission_root>: regenerate <root>/_outpost from templates/_outpost, as a whole.
 # _outpost/ belongs to Outpost: it is rebuilt next to the current one, then swapped in.
 sync_outpost() {
-  local root="$1" dest="$1/_outpost" new="$1/_outpost.new" bin nd qbin f
+  local root="$1" dest="$1/_outpost" new="$1/_outpost.new" old="$1/_outpost.old" bin nd qbin f
   rm -rf "$new"
+  rm -rf "$old" 2>/dev/null || true   # left by a previous swap that could not remove it
   mkdir -p "$new"
   cp -R "$TEMPLATES/_outpost/." "$new/"
   printf '%s\n' "$VERSION" > "$new/VERSION"
@@ -228,7 +237,20 @@ sync_outpost() {
     rm -rf "$new"
     ok "_outpost/ up to date (v$VERSION)"
   else
-    rm -rf "$dest"; mv "$new" "$dest"; UPDATED+=("$dest")
+    # Move the old one aside before deleting it: on Windows a file open in an editor blocks
+    # the rename, and then the current _outpost/ is still whole instead of half deleted.
+    if ! mv "$dest" "$old" 2>/dev/null; then
+      rm -rf "$new"
+      warn "_outpost/ is in use (a file open in VS Code or another program?): kept v$(cat "$dest/VERSION"), close it and re-run"
+      return 0
+    fi
+    if ! mv "$new" "$dest"; then
+      mv "$old" "$dest"; rm -rf "$new"
+      warn "could not put the new _outpost/ in place: kept the previous version"
+      return 0
+    fi
+    rm -rf "$old" 2>/dev/null || warn "could not remove $old (in use?): it is removed on the next run"
+    UPDATED+=("$dest")
     ok "_outpost/ updated to v$VERSION"
   fi
 }
@@ -272,7 +294,7 @@ cmd_init() {
     # The path is a folder NAME under .dry-run/ (gitignored), never a real location.
     target="${target:-mission}"
     case "$target" in
-      /*|..|../*|*/..|*/../*) die "--dry-run takes a relative folder name (created under .dry-run/), got '$target'" ;;
+      /*|[A-Za-z]:*|..|../*|*/..|*/../*) die "--dry-run takes a relative folder name (created under .dry-run/), got '$target'" ;;
     esac
     target="$OUTPOST_HOME/.dry-run/$target"
   else
@@ -415,10 +437,10 @@ install_profile() {
   PROFILE_MANUAL="export OUTPOST_NOTES=$q_notes
 source $q_src"
 
-  sh="${SHELL##*/}"
+  sh="${SHELL##*/}"; sh="${sh%.exe}"
   case "$sh" in
     zsh)  rc="$base/.zshrc" ;;
-    bash) if [ "$(uname)" = Darwin ]; then rc="$base/.bash_profile"; else rc="$base/.bashrc"; fi ;;
+    bash) if [ "$OS" = mac ]; then rc="$base/.bash_profile"; else rc="$base/.bashrc"; fi ;;
     *)    warn "shell '${sh:-unknown}' is not supported (bash or zsh): add these lines to your profile yourself"
           return 0 ;;
   esac
@@ -455,6 +477,24 @@ source $q_src"
     ok "shell profile: $shown"
   fi
   rm -f "$tmp"
+  [ "$OS" != windows ] || [ "$sh" != bash ] || bash_login_loads_rc "$base"
+}
+
+# bash_login_loads_rc <home>: Git Bash is a login shell, so it reads the first of ~/.bash_profile,
+# ~/.bash_login and ~/.profile, never ~/.bashrc directly. Without any of them, create a
+# .bash_profile that loads ~/.bashrc (what Git for Windows itself does); one of yours is only checked.
+bash_login_loads_rc() {
+  local base="$1" f shown
+  for f in .bash_profile .bash_login .profile; do
+    [ -f "$base/$f" ] || continue
+    grep -q 'bashrc' "$base/$f" \
+      || warn "~/$f does not load ~/.bashrc: add 'test -f ~/.bashrc && . ~/.bashrc' to it, or Git Bash will not have outpost, n and np"
+    return 0
+  done
+  shown="${base/#"$HOME"/\~}/.bash_profile"
+  printf '%s\n' '# created by outpost: Git Bash is a login shell, load ~/.bashrc' \
+    'test -f ~/.profile && . ~/.profile' 'test -f ~/.bashrc && . ~/.bashrc' > "$base/.bash_profile"
+  ok "$shown created (Git Bash loads ~/.bashrc through it)"
 }
 
 # --- outpost note -----------------------------------------------------------

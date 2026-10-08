@@ -21,10 +21,14 @@ t "sources the mission's commands.sh" 'grep -qF "source '"'"'$REAL/_outpost/shel
 t "commands.sh calls this clone's binary" 'grep -qF "_OUTPOST_BIN='"'"'$ROOT/outpost'"'"'" "$REAL/_outpost/shell/commands.sh"'
 
 echo "the block works in a real shell"
-OUT=$(zsh -c "source '$RC'; echo \$OUTPOST_NOTES; type n >/dev/null && type np >/dev/null && echo fns")
-t "zsh gets OUTPOST_NOTES, n and np" '[ "$OUT" = "$REAL/notes
+if command -v zsh >/dev/null 2>&1; then
+  OUT=$(zsh -c "source '$RC'; echo \$OUTPOST_NOTES; type n >/dev/null && type np >/dev/null && echo fns")
+  t "zsh gets OUTPOST_NOTES, n and np" '[ "$OUT" = "$REAL/notes
 fns" ]'
-OUT=$(zsh -c "source '$RC'; cd /; outpost --version")
+else
+  echo "  skip  zsh not installed"
+fi
+OUT=$(bash -c "source '$RC'; cd /; outpost --version")
 t "outpost works from anywhere" '[ "$OUT" = "$("$OUTPOST" --version)" ]'
 OUT=$(bash -c "source '$RC'; echo \$OUTPOST_NOTES; type n >/dev/null && type np >/dev/null && echo fns")
 t "bash gets OUTPOST_NOTES, n and np" '[ "$OUT" = "$REAL/notes
@@ -41,7 +45,7 @@ t "lines before and after are kept" 'grep -q "^alias ll=" "$RC" && grep -q "^exp
 
 echo "paths with a quote"
 Q="$TMP/it's here"; init "$Q" --no-skill; RQ=$(cd "$Q" && pwd -P)
-OUT=$(zsh -c "source '$RC'; echo \$OUTPOST_NOTES")
+OUT=$(bash -c "source '$RC'; echo \$OUTPOST_NOTES")
 t "quoted safely" '[ "$OUT" = "$RQ/notes" ]'
 
 echo "bash and unsupported shells"
@@ -52,6 +56,25 @@ rm -f "$HOME/.bashrc" "$HOME/.bash_profile"
 OUT=$(SHELL=/usr/bin/fish "$OUTPOST" init "$TMP/m5" --no-skill 2>&1)
 t "fish: nothing written" '[ -z "$(ls -A "$HOME")" ]'
 t "fish: manual lines shown" 'printf "%s" "$OUT" | grep -q "export OUTPOST_NOTES="'
+
+echo "windows (Git Bash)"
+rm -rf "$HOME"; mkdir -p "$HOME"
+OUTPOST_OS=windows SHELL=/usr/bin/bash init "$TMP/w1" --no-skill; RW=$(cd "$TMP/w1" && pwd -P)
+t "block in .bashrc" 'grep -qF "$RW/notes" "$HOME/.bashrc"'
+t ".bash_profile created, loads .bashrc" 'grep -qF ". ~/.bashrc" "$HOME/.bash_profile"'
+OUT=$(bash --login -c 'echo "$OUTPOST_NOTES"; type n >/dev/null && echo fns' 2>/dev/null | tail -n 2)
+t "a login shell gets OUTPOST_NOTES and n" '[ "$OUT" = "$RW/notes
+fns" ]'
+B=$(cat "$HOME/.bash_profile" "$HOME/.bashrc")
+OUTPOST_OS=windows SHELL=/usr/bin/bash init "$TMP/w1" --no-skill
+t "rerun changes nothing" '[ "$(cat "$HOME/.bash_profile" "$HOME/.bashrc")" = "$B" ]'
+rm -rf "$HOME"; mkdir -p "$HOME"; printf 'export MINE=1\n' > "$HOME/.bash_profile"
+OUT=$(OUTPOST_OS=windows SHELL=/usr/bin/bash "$OUTPOST" init "$TMP/w3" --no-skill 2>&1)
+t "own .bash_profile untouched" '[ "$(cat "$HOME/.bash_profile")" = "export MINE=1" ]'
+t "warns that it does not load .bashrc" 'printf "%s" "$OUT" | grep -q "does not load ~/.bashrc"'
+OUT=$(OUTPOST_OS=windows "$OUTPOST" init 'C:/missions/x' --dry-run 2>&1)
+t "dry-run refuses a drive path" 'printf "%s" "$OUT" | grep -q "relative folder name"'
+rm -rf "$HOME"; mkdir -p "$HOME"
 
 echo "dry-run and --no-profile"
 DRY="test-profile-$$"  # own name: never touch your own .dry-run/ missions
