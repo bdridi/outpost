@@ -1,6 +1,6 @@
 # Weekly review
 
-Working directory: the `notes/` folder. Follow the rules in `AGENTS.md`. Task:
+Working directory: the `notes/` folder. Follow the rules in `AGENTS.md` (which points to `../_outpost/notes/AGENTS.md`). Task:
 
 1. Read every daily note of the current ISO week, public and private
    (`daily/YYYY-MM-DD.md` and `daily/YYYY-MM-DD.private.md`).

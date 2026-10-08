@@ -38,10 +38,11 @@ t "warning shown" 'printf "%s" "$OUT" | grep -q "not managed by outpost"'
 
 echo "dry-run and --no-skill"
 rm -rf "$HOME/.claude" "$HOME/.copilot"
-"$OUTPOST" init --no-profile skilltest --dry-run --agent claude >/dev/null 2>&1
-t "dry-run writes in the fake home" '[ -f "$ROOT/.dry-run/skilltest/.fake-home/.claude/skills/outpost-note/SKILL.md" ]'
+DRY="test-skill-$$"  # own name: never touch your own .dry-run/ missions
+"$OUTPOST" init --no-profile "$DRY" --dry-run --agent claude >/dev/null 2>&1
+t "dry-run writes in the fake home" '[ -f "$ROOT/.dry-run/$DRY/.fake-home/.claude/skills/outpost-note/SKILL.md" ]'
 t "dry-run leaves the real home alone" '[ -z "$(ls -A "$HOME")" ]'
-rm -rf "$ROOT/.dry-run"
+rm -rf "$ROOT/.dry-run/$DRY"; rmdir "$ROOT/.dry-run" 2>/dev/null
 "$OUTPOST" init --no-profile "$TMP/m3" --agent claude --no-skill >/dev/null 2>&1
 t "--no-skill installs nothing" '[ -z "$(ls -A "$HOME")" ]'
 

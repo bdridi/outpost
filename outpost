@@ -2,7 +2,7 @@
 # Outpost - client mission workspace tool. Needs only bash + git (git-crypt for private notes).
 set -euo pipefail
 
-VERSION="0.1.0"
+VERSION="0.2.0"
 
 # Resolve the real location of this script (follows symlinks).
 src="${BASH_SOURCE[0]}"
@@ -15,7 +15,9 @@ OUTPOST_HOME=$(cd -P "$(dirname "$src")" && pwd)
 TEMPLATES="$OUTPOST_HOME/templates"
 
 CREATED=()   # absolute paths of files created during this run
+UPDATED=()   # absolute paths of managed files rewritten during this run
 WARNINGS=()
+CMD=init     # init or update (only changes the messages)
 
 VERBOSE=0
 DEFAULT_NOTES=""
@@ -63,8 +65,14 @@ Usage:
                         <outpost clone>/.dry-run/ (gitignored), default: mission
                         --verbose: list every created file
                         --no-skill: do not install the note skill for the agent
-                        --no-profile: do not touch the shell profile (NOTES, n, np)
+                        --no-profile: do not touch the shell profile (OUTPOST_NOTES, outpost, n, np)
                         (dry-run installs it under <mission>/.fake-home)
+  outpost update [path] [--dry-run] [--no-fetch]
+                        move this clone to the latest release tag, then refresh the
+                        mission (default: the mission around the current folder):
+                        _outpost/ is regenerated, your folders only get additions
+                        --no-fetch: keep the tool as it is, only refresh the mission
+                        also takes --verbose, --no-skill, --no-profile
   outpost note [--private] [--tags "type/idea topic/x"]
                         append a note (text on stdin) to today's daily note
   outpost help          show this help
@@ -97,7 +105,7 @@ write_if_missing() { # <path> ; content on stdin
 }
 
 init_notes() {
-  local notes="$1" agent="$2" have_crypt=0 gitdir
+  local notes="$1" have_crypt=0 gitdir
   command -v git-crypt >/dev/null 2>&1 && have_crypt=1
 
   mkdir -p "$notes"
@@ -111,12 +119,17 @@ init_notes() {
   fi
   gitdir=$(git -C "$notes" rev-parse --absolute-git-dir)
 
-  # 2. pre-commit hook (installed first so nothing private slips in later).
+  # 2. pre-commit hook (installed first so nothing private slips in later). It is a relay to
+  #    _outpost/notes/hooks/pre-commit, so the real check is refreshed with _outpost/.
   local hook="$gitdir/hooks/pre-commit"
   mkdir -p "$gitdir/hooks"
   if [ ! -e "$hook" ]; then
     cp "$TEMPLATES/hooks/pre-commit" "$hook"; chmod +x "$hook"
     ok "pre-commit hook installed (blocks unencrypted *.private.md)"
+  elif grep -q '^# outpost: refuse to commit a \*.private.md' "$hook"; then
+    # Hook from before _outpost/ (the full check, copied in place): switch to the relay.
+    cp "$TEMPLATES/hooks/pre-commit" "$hook"; chmod +x "$hook"; UPDATED+=("$hook")
+    ok "pre-commit hook updated (now runs _outpost/notes/hooks/pre-commit)"
   elif ! cmp -s "$TEMPLATES/hooks/pre-commit" "$hook"; then
     warn "a different pre-commit hook already exists in $hook; private-file check NOT installed"
   else
@@ -155,28 +168,93 @@ EOF
   [ -d "$gitdir/git-crypt/keys" ] || skip=1
   local before=${#CREATED[@]}
   copy_tree "$TEMPLATES/notes" "$notes" "$skip"
-  # Agent-specific entry point (copilot reads AGENTS.md directly).
-  [ -d "$TEMPLATES/agents/$agent" ] && copy_tree "$TEMPLATES/agents/$agent" "$notes" "$skip"
 
-  # 6. commit the skeleton files that are not tracked yet. Only files that come from the
-  #    templates are considered, so a failed commit on a previous run heals itself and
-  #    your own files are never swept in.
+  # 6. Foam daily-note template, generated from _outpost's daily.md (single source, so `n`
+  #    and Foam always create the same daily note). Foam only reads it from .foam/templates/.
+  local foam=".foam/templates/daily-note.md" tmp
+  tmp=$(mktemp)
+  sed 's/{{date}}/${FOAM_DATE_YEAR}-${FOAM_DATE_MONTH}-${FOAM_DATE_DATE}/g' \
+    "$(dirname "$notes")/_outpost/notes/templates/daily.md" > "$tmp"
+  if [ ! -e "$notes/$foam" ]; then
+    mkdir -p "$notes/.foam/templates"; cp "$tmp" "$notes/$foam"; CREATED+=("$notes/$foam")
+  elif ! cmp -s "$tmp" "$notes/$foam"; then
+    cp "$tmp" "$notes/$foam"; UPDATED+=("$notes/$foam")
+  fi
+  rm -f "$tmp"
+
+  # 7. commit the skeleton files that are not tracked yet, and the Foam template when it
+  #    changed. Only those files are considered, so a failed commit on a previous run heals
+  #    itself and your own files (or your edits to skeleton files) are never swept in.
   local rel pending=()
   while IFS= read -r rel; do
     rel="${rel#./}"
     [ -z "$skip" ] || case "$rel" in *.private.md) continue ;; esac
     [ -f "$notes/$rel" ] || continue
-    git -C "$notes" cat-file -e "HEAD:$rel" 2>/dev/null && continue
+    if git -C "$notes" cat-file -e "HEAD:$rel" 2>/dev/null; then
+      [ "$rel" = "$foam" ] || continue
+      git -C "$notes" diff --quiet HEAD -- "$rel" && continue
+    fi
     git -C "$notes" add -- "$rel"; pending+=("$rel")
-  done < <({ (cd "$TEMPLATES/notes" && find . -type f); [ ! -d "$TEMPLATES/agents/$agent" ] || (cd "$TEMPLATES/agents/$agent" && find . -type f); } | LC_ALL=C sort)
+  done < <({ (cd "$TEMPLATES/notes" && find . -type f); echo "$foam"; } | LC_ALL=C sort)
   if [ "${#pending[@]}" -gt 0 ]; then
-    git -C "$notes" commit -q -m "outpost: notes skeleton" -- "${pending[@]}" \
+    git -C "$notes" commit -q -m "outpost: notes v$VERSION" -- "${pending[@]}" \
       || warn "could not commit the notes skeleton (git user.name/user.email set?)"
   fi
 }
 
+# sync_outpost <mission_root>: regenerate <root>/_outpost from templates/_outpost, as a whole.
+# _outpost/ belongs to Outpost: it is rebuilt next to the current one, then swapped in.
+sync_outpost() {
+  local root="$1" dest="$1/_outpost" new="$1/_outpost.new" bin nd qbin f
+  rm -rf "$new"
+  mkdir -p "$new"
+  cp -R "$TEMPLATES/_outpost/." "$new/"
+  printf '%s\n' "$VERSION" > "$new/VERSION"
+  # The note skill, with this clone's binary and this mission's notes folder baked in.
+  bin="$OUTPOST_HOME/outpost"; bin=${bin//\\/\\\\}; bin=${bin//&/\\&}; bin=${bin//|/\\|}
+  nd="$root/notes"; nd=${nd//\\/\\\\}; nd=${nd//&/\\&}; nd=${nd//|/\\|}
+  f="$new/skills/outpost-note/SKILL.md"
+  sed "s|{{OUTPOST_BIN}}|$bin|g; s|{{NOTES_DIR}}|$nd|g" "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+  # n / np, sourced by the shell profile: this clone's binary, single-quoted for the shell.
+  qbin="'${OUTPOST_HOME//\'/\'\\\'\'}/outpost'"
+  qbin=${qbin//\\/\\\\}; qbin=${qbin//&/\\&}; qbin=${qbin//|/\\|}
+  f="$new/shell/commands.sh"
+  sed "s|{{OUTPOST_BIN_QUOTED}}|$qbin|g" "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+
+  if [ ! -d "$dest" ]; then
+    mv "$new" "$dest"; CREATED+=("$dest")
+    ok "_outpost/ created (v$VERSION)"
+  elif diff -r "$dest" "$new" >/dev/null 2>&1; then
+    rm -rf "$new"
+    ok "_outpost/ up to date (v$VERSION)"
+  else
+    rm -rf "$dest"; mv "$new" "$dest"; UPDATED+=("$dest")
+    ok "_outpost/ updated to v$VERSION"
+  fi
+}
+
+# warn_legacy <notes_dir>: files from before _outpost/ that Outpost no longer uses or updates.
+# They are yours, so they are only reported, never changed or removed.
+warn_legacy() {
+  local notes="$1" f
+  if [ -d "$notes/templates" ]; then
+    warn "notes/templates/ is no longer used: templates now live in _outpost/notes/templates/ (you can delete it)"
+  fi
+  for f in AGENTS.md CLAUDE.md; do
+    if [ -f "$notes/$f" ] && ! grep -q '_outpost/notes/AGENTS.md' "$notes/$f"; then
+      warn "notes/$f predates _outpost/ and will not get convention updates: make it point to ../_outpost/notes/AGENTS.md (see $TEMPLATES/notes/AGENTS.md)"
+    fi
+  done
+}
+
+# conf_get <mission_root> <key>: value saved in <root>/.outpost.conf, empty if none.
+conf_get() {
+  [ -f "$1/.outpost.conf" ] || return 0
+  sed -n "s/^$2=//p" "$1/.outpost.conf" | head -n 1
+}
+
 cmd_init() {
-  local target="" agent="" saved="" dry=0 skill=1 profile=1 root
+  local target="" agent="" dry=0 skill="" profile="" root conf
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --agent)   [ "$#" -ge 2 ] || die "--agent needs a value (copilot|claude)"; agent="$2"; shift 2 ;;
@@ -211,18 +289,23 @@ cmd_init() {
   case "$OUTPOST_HOME/" in
     "$root"/*) die "the Outpost clone must be outside the mission root ($root)" ;;
   esac
-
-  if [ -f "$root/.outpost.conf" ]; then
-    saved=$(sed -n 's/^agent=//p' "$root/.outpost.conf" | head -n 1)
+  # _outpost/ is replaced as a whole: never take over a folder Outpost did not create.
+  if [ -e "$root/_outpost" ] && [ ! -f "$root/_outpost/VERSION" ]; then
+    die "$root/_outpost exists but is not managed by outpost (no VERSION file): move it away first"
   fi
-  # Explicit flag wins, then the saved choice, then the default.
-  agent="${agent:-${saved:-copilot}}"
+
+  # Choices are saved in .outpost.conf (outside the client git) so that re-runs and
+  # `outpost update` keep them. Explicit flag wins, then the saved choice, then the default.
+  agent="${agent:-$(conf_get "$root" agent)}"; agent="${agent:-copilot}"
+  skill="${skill:-$(conf_get "$root" skill)}"; skill="${skill:-1}"
+  profile="${profile:-$(conf_get "$root" profile)}"; profile="${profile:-1}"
   case "$agent" in copilot|claude) ;; *) die "invalid agent '$agent' in $root/.outpost.conf" ;; esac
-  [ "$agent" = "$saved" ] || printf 'agent=%s\n' "$agent" > "$root/.outpost.conf"
+  conf=$(printf 'agent=%s\n' "$agent"; [ "$skill" = 1 ] || echo "skill=0"; [ "$profile" = 1 ] || echo "profile=0")
+  [ "$conf" = "$(cat "$root/.outpost.conf" 2>/dev/null)" ] || printf '%s\n' "$conf" > "$root/.outpost.conf"
 
   local tag=""
   [ "$dry" = 1 ] && tag=" ${Y}[dry-run]${N}"
-  say "${I_START} ${B}Outpost $VERSION${N} ${D}init${N}$tag"
+  say "${I_START} ${B}Outpost $VERSION${N} ${D}$CMD${N}$tag"
   say "   ${D}mission root${N}  $root"
   say "   ${D}agent${N}         $agent"
   say ""
@@ -233,47 +316,53 @@ cmd_init() {
     copy_tree "$TEMPLATES/$d" "$root/$d"
     summary "$d/" "$n"
   done
+  say "$I_DIR ${B}_outpost/${N} ${D}(managed by outpost, regenerated as a whole)${N}"
+  sync_outpost "$root"
   n=${#CREATED[@]}
   say "$I_NOTES ${B}notes/${N}"
-  init_notes "$root/notes" "$agent"
+  init_notes "$root/notes"
+  warn_legacy "$root/notes"
   summary "notes files" "$n"
   if [ "$skill" = 1 ]; then
     say "$I_SKILL ${B}note skill${N} ${D}(outside the mission root, in your user folder)${N}"
     if [ "$dry" = 1 ]; then
-      install_skill "$agent" "$root/.fake-home" "$root/notes"
+      install_skill "$agent" "$root/.fake-home" "$root"
     else
-      install_skill "$agent" "$HOME" "$root/notes"
+      install_skill "$agent" "$HOME" "$root"
     fi
   fi
 
   if [ "$profile" = 1 ]; then
     say "$I_SHELL ${B}shell profile${N} ${D}(outside the mission root, in your home)${N}"
     if [ "$dry" = 1 ]; then
-      install_profile "$root/.fake-home" "$root/notes"
+      install_profile "$root/.fake-home" "$root"
     else
-      install_profile "$HOME" "$root/notes"
+      install_profile "$HOME" "$root"
     fi
   fi
 
   say ""
-  if [ "${#CREATED[@]}" -eq 0 ]; then
+  if [ "${#CREATED[@]}" -eq 0 ] && [ "${#UPDATED[@]}" -eq 0 ]; then
     say "$I_DONE ${B}Nothing to do${N}: layout already complete."
-  else
+  elif [ "${#UPDATED[@]}" -eq 0 ]; then
     say "$I_DONE ${B}Done${N}: ${#CREATED[@]} file(s) created."
+  else
+    say "$I_DONE ${B}Done${N}: ${#CREATED[@]} created, ${#UPDATED[@]} managed item(s) updated."
   fi
   [ "${#WARNINGS[@]}" -eq 0 ] || say "$Y$I_WARN ${#WARNINGS[@]} warning(s), see above$N"
+  [ "$CMD" = init ] || return 0
   local step=0
   say ""
   say "${I_NEXT} ${B}Next steps${N}"
   if [ -n "$PROFILE_RC" ]; then
-    step=$((step + 1)); say "  $step. Open a new terminal (or: source $PROFILE_RC) to get NOTES, n and np."
+    step=$((step + 1)); say "  $step. Open a new terminal (or: source $PROFILE_RC) to get OUTPOST_NOTES, outpost, n and np."
   else
     step=$((step + 1)); say "  $step. Add to your shell profile:"
     if [ -n "$PROFILE_MANUAL" ]; then
       printf '%s\n' "$PROFILE_MANUAL" | sed 's/^/       /'
     else
-      say "       export NOTES=\"$root/notes\""
-      say "       source \"$OUTPOST_HOME/shell/notes.sh\""
+      say "       export OUTPOST_NOTES=\"$root/notes\""
+      say "       source \"$root/_outpost/shell/commands.sh\""
     fi
   fi
   cat <<TXT
@@ -281,51 +370,49 @@ cmd_init() {
        cd "$root/notes" && git-crypt export-key /tmp/notes.key
        (copy it to your password manager, then: rm /tmp/notes.key)
   $((step + 2)). Friday review (manual): open your agent in notes/ and have it follow
-       $OUTPOST_HOME/prompts/weekly-review.md
+       $root/_outpost/prompts/weekly-review.md
   $((step + 3)). Push notes/ to a private repo of the client git, once security confirms
      that encrypted content is accepted.
 TXT
 }
 
-# install_skill <agent> <home>: the note skill, same SKILL.md for both agents.
+# install_skill <agent> <home> <mission_root>: copies the note skill rendered in
+# <root>/_outpost/skills/ to where the agent looks for it (same SKILL.md for both agents).
 # The file is owned by Outpost only while it carries the "managed by outpost" marker.
 install_skill() {
-  local agent="$1" base="$2" notes_dir="$3" dir rel tmp bin nd shown
+  local agent="$1" base="$2" root="$3" dir rel src shown
   case "$agent" in
     claude)  rel=".claude/skills/outpost-note" ;;
     copilot) rel=".copilot/skills/outpost-note" ;;
   esac
   dir="$base/$rel"
   shown="${dir/#"$HOME"/\~}"
-  bin="$OUTPOST_HOME/outpost"; bin=${bin//\\/\\\\}; bin=${bin//&/\\&}; bin=${bin//|/\\|}
-  nd="$notes_dir"; nd=${nd//\\/\\\\}; nd=${nd//&/\\&}; nd=${nd//|/\\|}
-  tmp=$(mktemp)
-  sed "s|{{OUTPOST_BIN}}|$bin|g; s|{{NOTES_DIR}}|$nd|g" "$OUTPOST_HOME/prompts/skills/outpost-note/SKILL.md" > "$tmp"
+  src="$root/_outpost/skills/outpost-note/SKILL.md"
   if [ ! -e "$dir/SKILL.md" ]; then
-    mkdir -p "$dir"; cp "$tmp" "$dir/SKILL.md"
+    mkdir -p "$dir"; cp "$src" "$dir/SKILL.md"
     ok "note skill installed: $shown"
   elif ! grep -q 'managed by outpost' "$dir/SKILL.md"; then
     warn "$shown/SKILL.md exists and is not managed by outpost: left untouched"
-  elif ! cmp -s "$tmp" "$dir/SKILL.md"; then
-    cp "$tmp" "$dir/SKILL.md"
+  elif ! cmp -s "$src" "$dir/SKILL.md"; then
+    cp "$src" "$dir/SKILL.md"
     ok "note skill updated: $shown"
   else
     ok "note skill: $shown"
   fi
-  rm -f "$tmp"
 }
 
-# install_profile <home> <notes_dir>: managed block in the shell profile (NOTES + n/np).
+# install_profile <home> <mission_root>: managed block in the shell profile (OUTPOST_NOTES, and
+# outpost, n and np from <root>/_outpost/shell/commands.sh).
 # Only the lines between the two markers belong to Outpost; the rest of the file is untouched.
 PROFILE_RC=""      # profile file handled by this run (empty if unsupported)
 PROFILE_MANUAL=""  # lines to add by hand when the shell is not supported
 install_profile() {
-  local base="$1" notes_dir="$2" sh rc shown q_notes q_src line inblock=0 found=0 tmp
+  local base="$1" root="$2" notes_dir="$2/notes" sh rc shown q_notes q_src line inblock=0 found=0 tmp
   local begin='# >>> outpost >>> (managed by outpost: re-running init rewrites this block)'
   local end='# <<< outpost <<<'
   q_notes="'${notes_dir//\'/\'\\\'\'}'"
-  q_src="'${OUTPOST_HOME//\'/\'\\\'\'}/shell/notes.sh'"
-  PROFILE_MANUAL="export NOTES=$q_notes
+  q_src="'${root//\'/\'\\\'\'}/_outpost/shell/commands.sh'"
+  PROFILE_MANUAL="export OUTPOST_NOTES=$q_notes
 source $q_src"
 
   sh="${SHELL##*/}"
@@ -342,7 +429,7 @@ source $q_src"
     while IFS= read -r line || [ -n "$line" ]; do
       if [ "$inblock" = 0 ] && [ "${line:0:14}" = "# >>> outpost " ]; then
         inblock=1; found=1
-        printf '%s\n%s\n%s\n%s\n' "$begin" "export NOTES=$q_notes" "source $q_src" "$end" >> "$tmp"
+        printf '%s\n%s\n%s\n%s\n' "$begin" "export OUTPOST_NOTES=$q_notes" "source $q_src" "$end" >> "$tmp"
       elif [ "$inblock" = 1 ]; then
         [ "$line" = "$end" ] && inblock=0
       else
@@ -355,15 +442,15 @@ source $q_src"
   fi
   if [ "$found" = 0 ]; then
     [ ! -s "$tmp" ] || [ -z "$(tail -n1 "$tmp")" ] || printf '\n' >> "$tmp"
-    printf '%s\n%s\n%s\n%s\n' "$begin" "export NOTES=$q_notes" "source $q_src" "$end" >> "$tmp"
+    printf '%s\n%s\n%s\n%s\n' "$begin" "export OUTPOST_NOTES=$q_notes" "source $q_src" "$end" >> "$tmp"
   fi
 
   PROFILE_RC="$shown"
   if [ ! -f "$rc" ]; then
-    mkdir -p "$(dirname "$rc")"; cat "$tmp" > "$rc"; ok "shell profile created: $shown (NOTES, n, np)"
+    mkdir -p "$(dirname "$rc")"; cat "$tmp" > "$rc"; ok "shell profile created: $shown (OUTPOST_NOTES, outpost, n, np)"
   elif ! cmp -s "$tmp" "$rc"; then
     cat "$tmp" > "$rc"
-    if [ "$found" = 1 ]; then ok "shell profile updated: $shown (NOTES, n, np)"; else ok "shell profile: block added to $shown (NOTES, n, np)"; fi
+    if [ "$found" = 1 ]; then ok "shell profile updated: $shown (OUTPOST_NOTES, outpost, n, np)"; else ok "shell profile: block added to $shown (OUTPOST_NOTES, outpost, n, np)"; fi
   else
     ok "shell profile: $shown"
   fi
@@ -372,7 +459,7 @@ source $q_src"
 
 # --- outpost note -----------------------------------------------------------
 
-# Nearest mission above $PWD (a folder holding .outpost.conf and notes/), else $NOTES,
+# Nearest mission above $PWD (a folder holding .outpost.conf and notes/), else $OUTPOST_NOTES,
 # else the notes folder baked into the skill at install time (DEFAULT_NOTES).
 find_notes_dir() {
   local d="$PWD"
@@ -381,7 +468,7 @@ find_notes_dir() {
     [ "$d" = "/" ] && break
     d=$(dirname "$d")
   done
-  if [ -n "${NOTES:-}" ] && [ -d "$NOTES" ]; then printf '%s\n' "$NOTES"; return 0; fi
+  if [ -n "${OUTPOST_NOTES:-}" ] && [ -d "$OUTPOST_NOTES" ]; then printf '%s\n' "$OUTPOST_NOTES"; return 0; fi
   if [ -n "${DEFAULT_NOTES:-}" ] && [ -d "$DEFAULT_NOTES" ]; then printf '%s\n' "$DEFAULT_NOTES"; return 0; fi
   return 1
 }
@@ -444,7 +531,7 @@ cmd_note() {
   esac
   fences_balanced <<<"$body" || die "unclosed code fence (\`\`\` or ~~~) in the text"
 
-  notes=$(find_notes_dir) || die "no mission found from $PWD: run inside a mission folder, set NOTES, or re-run 'outpost init' to refresh the skill"
+  notes=$(find_notes_dir) || die "no mission found from $PWD: run inside a mission folder, set OUTPOST_NOTES, or re-run 'outpost init' to refresh the skill"
   suffix=""
   if [ -n "$private" ]; then
     suffix=".private"
@@ -456,7 +543,9 @@ cmd_note() {
   file="$notes/daily/$d$suffix.md"
   mkdir -p "$notes/daily"
   if [ ! -f "$file" ]; then
-    tpl="$notes/templates/daily$suffix.md"
+    # Managed template first; a mission from before _outpost/ still has its own copy.
+    tpl="$(dirname "$notes")/_outpost/notes/templates/daily$suffix.md"
+    [ -f "$tpl" ] || tpl="$notes/templates/daily$suffix.md"
     if [ -f "$tpl" ]; then
       sed "s/{{date}}/$d/g" "$tpl" > "$file"
     else
@@ -487,8 +576,83 @@ cmd_note() {
   printf '%s%s%s note added to %s%s\n' "$G" "$I_OK" "$N" "${file#"${notes%/notes}"/}" "${private:+ (private)}"
 }
 
+# --- outpost update -----------------------------------------------------------
+
+# self_update: moves an install clone (detached on a release tag, no local change) to the
+# latest release tag. A dev clone (on a branch) or a modified one is left as it is.
+# Sets NEW_TAG to the tag it moved to (empty otherwise).
+self_update() {
+  local h="$OUTPOST_HOME" latest
+  NEW_TAG=""
+  if ! git -C "$h" rev-parse --git-dir >/dev/null 2>&1; then
+    warn "$h is not a git clone: tool not updated"; return 0
+  fi
+  if git -C "$h" symbolic-ref -q HEAD >/dev/null; then
+    warn "dev clone (on branch $(git -C "$h" symbolic-ref --short HEAD)): tool not updated, the mission gets this working copy"
+    return 0
+  fi
+  if [ -n "$(git -C "$h" status --porcelain)" ]; then
+    warn "$h has local changes: tool not updated"; return 0
+  fi
+  if ! git -C "$h" fetch -q --tags origin 2>/dev/null; then
+    warn "could not fetch release tags (offline?): staying on v$VERSION"; return 0
+  fi
+  latest=$(git -C "$h" tag -l 'v[0-9]*' --sort=-v:refname | head -n 1)
+  [ -n "$latest" ] && [ "$latest" != "v$VERSION" ] || return 0
+  # Only move forward (the latest tag can be older than an unreleased VERSION bump).
+  [ "$(printf '%s\nv%s\n' "$latest" "$VERSION" | sort -V | tail -n 1)" = "$latest" ] || return 0
+  git -C "$h" -c advice.detachedHead=false checkout -q "$latest" \
+    || { warn "could not check out $latest: staying on v$VERSION"; return 0; }
+  NEW_TAG="$latest"
+}
+
+cmd_update() {
+  local target="" dry=0 fetch=1 notes root args=()
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --dry-run)  dry=1; shift ;;
+      --no-fetch) fetch=0; shift ;;
+      --verbose|--no-skill|--no-profile) args+=("$1"); shift ;;
+      -*)         die "unknown option: $1" ;;
+      *)          target="$1"; shift ;;
+    esac
+  done
+
+  # Which mission: the explicit path (or dry-run name), else the one around the current folder.
+  if [ "$dry" = 1 ]; then
+    target="${target:-mission}"
+    [ -f "$OUTPOST_HOME/.dry-run/$target/.outpost.conf" ] || die "no dry-run mission '$target' (run: outpost init $target --dry-run)"
+  elif [ -n "$target" ]; then
+    [ -f "$target/.outpost.conf" ] || die "$target is not an outpost mission (no .outpost.conf)"
+  else
+    notes=$(find_notes_dir) || die "no mission found from $PWD: run inside a mission folder or pass its path"
+    root=$(dirname "$notes")
+    [ -f "$root/.outpost.conf" ] || die "$root is not an outpost mission (no .outpost.conf)"
+    case "$root/" in
+      "$OUTPOST_HOME/.dry-run/"*) dry=1; target="${root#"$OUTPOST_HOME/.dry-run/"}" ;;
+      *) target="$root" ;;
+    esac
+  fi
+
+  # 1. The tool. Never in dry-run: a test run must not move the clone.
+  if [ "$fetch" = 1 ] && [ "$dry" = 0 ]; then
+    self_update
+    if [ -n "$NEW_TAG" ]; then
+      say "${I_START} ${B}Outpost${N} v$VERSION -> $NEW_TAG"
+      # Hand over to the new version, which refreshes the mission with its own code.
+      exec "$OUTPOST_HOME/outpost" update --no-fetch "$target" ${args[@]+"${args[@]}"}
+    fi
+  fi
+
+  # 2. The mission: same code path as init, so a fresh and an updated mission are identical.
+  CMD=update
+  [ "$dry" = 1 ] && args+=(--dry-run)
+  cmd_init "$target" ${args[@]+"${args[@]}"}
+}
+
 case "${1:-help}" in
   init) shift; cmd_init "$@" ;;
+  update) shift; cmd_update "$@" ;;
   note) shift; cmd_note "$@" ;;
   help|-h|--help) usage ;;
   -v|--version|version) say "$VERSION" ;;

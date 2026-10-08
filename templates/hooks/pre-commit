@@ -1,19 +1,9 @@
 #!/bin/sh
-# outpost: refuse to commit a *.private.md that is not git-crypt encrypted.
-# Checks the staged blob itself (git-crypt magic header), so it also holds
-# when git-crypt is missing or the repo is not initialised.
-magic="00474954435259505400"   # \0GITCRYPT\0
-bad=""
-IFS='
-'
-for f in $(git -c core.quotepath=off diff --cached --name-only --diff-filter=ACMR); do
-  case "$f" in *.private.md) ;; *) continue ;; esac
-  hdr=$(git cat-file blob ":$f" | head -c 10 | od -An -tx1 | tr -d ' \n')
-  [ "$hdr" = "$magic" ] || bad="$bad
-  $f"
-done
-if [ -n "$bad" ]; then
-  echo "outpost: commit blocked, these private files are NOT encrypted:$bad" >&2
-  echo "Run 'git-crypt status', check .gitattributes and 'git-crypt unlock'/'init'." >&2
+# outpost: relay to the managed hook in <mission>/_outpost (refreshed by `outpost update`).
+# Fails closed: no managed hook, no commit.
+hook="$(git rev-parse --show-toplevel)/../_outpost/notes/hooks/pre-commit"
+if [ ! -f "$hook" ]; then
+  echo "outpost: commit blocked, $hook is missing (run 'outpost update')" >&2
   exit 1
 fi
+exec sh "$hook" "$@"

@@ -16,15 +16,18 @@ export SHELL=/bin/zsh
 M="$TMP/m1"; init "$M" --no-skill
 RC="$HOME/.zshrc"; REAL=$(cd "$M" && pwd -P)
 t "created" '[ -f "$RC" ]'
-t "exports NOTES" 'grep -qF "export NOTES='"'"'$REAL/notes'"'"'" "$RC"'
-t "sources notes.sh" 'grep -qF "source '"'"'$ROOT/shell/notes.sh'"'"'" "$RC"'
+t "exports OUTPOST_NOTES" 'grep -qF "export OUTPOST_NOTES='"'"'$REAL/notes'"'"'" "$RC"'
+t "sources the mission's commands.sh" 'grep -qF "source '"'"'$REAL/_outpost/shell/commands.sh'"'"'" "$RC"'
+t "commands.sh calls this clone's binary" 'grep -qF "_OUTPOST_BIN='"'"'$ROOT/outpost'"'"'" "$REAL/_outpost/shell/commands.sh"'
 
 echo "the block works in a real shell"
-OUT=$(zsh -c "source '$RC'; echo \$NOTES; type n >/dev/null && type np >/dev/null && echo fns")
-t "zsh gets NOTES, n and np" '[ "$OUT" = "$REAL/notes
+OUT=$(zsh -c "source '$RC'; echo \$OUTPOST_NOTES; type n >/dev/null && type np >/dev/null && echo fns")
+t "zsh gets OUTPOST_NOTES, n and np" '[ "$OUT" = "$REAL/notes
 fns" ]'
-OUT=$(bash -c "source '$RC'; echo \$NOTES; type n >/dev/null && type np >/dev/null && echo fns")
-t "bash gets NOTES, n and np" '[ "$OUT" = "$REAL/notes
+OUT=$(zsh -c "source '$RC'; cd /; outpost --version")
+t "outpost works from anywhere" '[ "$OUT" = "$("$OUTPOST" --version)" ]'
+OUT=$(bash -c "source '$RC'; echo \$OUTPOST_NOTES; type n >/dev/null && type np >/dev/null && echo fns")
+t "bash gets OUTPOST_NOTES, n and np" '[ "$OUT" = "$REAL/notes
 fns" ]'
 
 echo "idempotence and respect for the rest of the file"
@@ -38,7 +41,7 @@ t "lines before and after are kept" 'grep -q "^alias ll=" "$RC" && grep -q "^exp
 
 echo "paths with a quote"
 Q="$TMP/it's here"; init "$Q" --no-skill; RQ=$(cd "$Q" && pwd -P)
-OUT=$(zsh -c "source '$RC'; echo \$NOTES")
+OUT=$(zsh -c "source '$RC'; echo \$OUTPOST_NOTES")
 t "quoted safely" '[ "$OUT" = "$RQ/notes" ]'
 
 echo "bash and unsupported shells"
@@ -48,13 +51,14 @@ t "bash profile written" '[ -f "$HOME/.bashrc" ] || [ -f "$HOME/.bash_profile" ]
 rm -f "$HOME/.bashrc" "$HOME/.bash_profile"
 OUT=$(SHELL=/usr/bin/fish "$OUTPOST" init "$TMP/m5" --no-skill 2>&1)
 t "fish: nothing written" '[ -z "$(ls -A "$HOME")" ]'
-t "fish: manual lines shown" 'printf "%s" "$OUT" | grep -q "export NOTES="'
+t "fish: manual lines shown" 'printf "%s" "$OUT" | grep -q "export OUTPOST_NOTES="'
 
 echo "dry-run and --no-profile"
-init prof --dry-run
-t "dry-run uses the fake home" '[ -f "$ROOT/.dry-run/prof/.fake-home/.zshrc" ]'
+DRY="test-profile-$$"  # own name: never touch your own .dry-run/ missions
+init "$DRY" --dry-run
+t "dry-run uses the fake home" '[ -f "$ROOT/.dry-run/$DRY/.fake-home/.zshrc" ]'
 t "real home untouched" '[ -z "$(ls -A "$HOME")" ]'
-rm -rf "$ROOT/.dry-run"
+rm -rf "$ROOT/.dry-run/$DRY"; rmdir "$ROOT/.dry-run" 2>/dev/null
 init "$TMP/m6" --no-skill --no-profile
 t "--no-profile writes nothing" '[ -z "$(ls -A "$HOME")" ]'
 

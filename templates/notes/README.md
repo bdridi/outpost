@@ -14,7 +14,7 @@
 - `daily/`: default capture, unsorted (`n "text"`, `np "text"`)
 - [[people]]: one table of everyone involved
 - `topics/`, `decisions/`, `guides/`: promoted during the Friday review
-- `templates/`: skeletons for each note type
+- `../_outpost/notes/templates/`: skeletons for each note type (managed by Outpost)
 - `*.private.md`: encrypted with git-crypt, can live in any folder
 
 Conventions for humans and agents: [[AGENTS]].

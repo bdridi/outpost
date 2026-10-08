@@ -8,7 +8,9 @@ OUTPOST="$ROOT/outpost"
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
-export OUTPOST_DATE=2026-10-07 OUTPOST_TIME=14:32 NO_COLOR=1
+# Temporary HOME: init writes the skill and the shell profile there, never in your real home.
+export OUTPOST_DATE=2026-10-07 OUTPOST_TIME=14:32 NO_COLOR=1 HOME="$TMP/home" SHELL=/bin/zsh
+mkdir -p "$HOME"
 PASS=0; FAIL=0
 
 ok()   { PASS=$((PASS + 1)); printf '  ok    %s\n' "$1"; }
@@ -110,13 +112,13 @@ grep -q '^# 2026-10-07 (private)$' "$M5/notes/daily/2026-10-07.private.md" && ok
 
 echo "finding the mission"
 OUT="$TMP/outside"; mkdir -p "$OUT"
-printf 'x\n' | (cd "$OUT" && env -u NOTES "$OUTPOST" note) >/dev/null 2>&1 && fail "no mission, no NOTES: error" || ok "no mission, no NOTES: error"
-printf 'via env\n' | (cd "$OUT" && NOTES="$M3/notes" "$OUTPOST" note) >/dev/null 2>&1 && grep -q 'via env' "$M3/notes/daily/2026-10-07.md" && ok "falls back to \$NOTES" || fail "falls back to \$NOTES"
-printf 'inside wins\n' | (cd "$M4/workspace" && NOTES="$M3/notes" "$OUTPOST" note) >/dev/null 2>&1
-grep -q 'inside wins' "$M4/notes/daily/2026-10-07.md" && ok "current mission wins over \$NOTES" || fail "current mission wins over \$NOTES"
+printf 'x\n' | (cd "$OUT" && env -u OUTPOST_NOTES "$OUTPOST" note) >/dev/null 2>&1 && fail "no mission, no OUTPOST_NOTES: error" || ok "no mission, no OUTPOST_NOTES: error"
+printf 'via env\n' | (cd "$OUT" && OUTPOST_NOTES="$M3/notes" "$OUTPOST" note) >/dev/null 2>&1 && grep -q 'via env' "$M3/notes/daily/2026-10-07.md" && ok "falls back to \$OUTPOST_NOTES" || fail "falls back to \$OUTPOST_NOTES"
+printf 'inside wins\n' | (cd "$M4/workspace" && OUTPOST_NOTES="$M3/notes" "$OUTPOST" note) >/dev/null 2>&1
+grep -q 'inside wins' "$M4/notes/daily/2026-10-07.md" && ok "current mission wins over \$OUTPOST_NOTES" || fail "current mission wins over \$OUTPOST_NOTES"
 
-printf 'via default\n' | (cd "$OUT" && env -u NOTES "$OUTPOST" note --default-notes "$M3/notes") >/dev/null 2>&1 && grep -q 'via default' "$M3/notes/daily/2026-10-07.md" && ok "falls back to --default-notes" || fail "falls back to --default-notes"
-printf 'mission wins\n' | (cd "$M4/workspace" && env -u NOTES "$OUTPOST" note --default-notes "$M3/notes") >/dev/null 2>&1
+printf 'via default\n' | (cd "$OUT" && env -u OUTPOST_NOTES "$OUTPOST" note --default-notes "$M3/notes") >/dev/null 2>&1 && grep -q 'via default' "$M3/notes/daily/2026-10-07.md" && ok "falls back to --default-notes" || fail "falls back to --default-notes"
+printf 'mission wins\n' | (cd "$M4/workspace" && env -u OUTPOST_NOTES "$OUTPOST" note --default-notes "$M3/notes") >/dev/null 2>&1
 grep -q 'mission wins' "$M4/notes/daily/2026-10-07.md" && ok "current mission wins over --default-notes" || fail "current mission wins over --default-notes"
 
 echo "n / np shell functions"
@@ -124,7 +126,7 @@ M6=$(new_mission); fake_crypt "$M6"
 for sh in bash zsh; do
   command -v "$sh" >/dev/null 2>&1 || { echo "  skip  $sh not installed"; continue; }
   rm -f "$M6"/notes/daily/*.md
-  ( cd "$M6" && "$sh" -c "source '$ROOT/shell/notes.sh'; n 'hello from $sh'; np 'private from $sh'" ) >/dev/null 2>&1
+  ( cd "$M6" && "$sh" -c "source '$M6/_outpost/shell/commands.sh'; n 'hello from $sh'; np 'private from $sh'" ) >/dev/null 2>&1
   grep -q "hello from $sh" "$M6/notes/daily/2026-10-07.md" 2>/dev/null && ok "$sh: n" || fail "$sh: n"
   grep -q "private from $sh" "$M6/notes/daily/2026-10-07.private.md" 2>/dev/null && ok "$sh: np" || fail "$sh: np"
 done
