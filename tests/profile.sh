@@ -44,10 +44,10 @@ t "new mission rewrites the block in place" 'grep -qF "$REAL2/notes" "$RC" && ! 
 t "lines before and after are kept" 'grep -q "^alias ll=" "$RC" && grep -q "^export AFTER=1$" "$RC" && [ "$(tail -n1 "$RC")" = "export AFTER=1" ]'
 
 echo "paths with a quote"
-Q="$TMP/it's here"; init "$Q" --no-skill; RQ=$(cd "$Q" && pwd -P)
+Q="$TMP/it's here"; QOUT=$("$OUTPOST" init "$Q" --no-skill 2>&1); QRC=$?; RQ=$(cd "$Q" && pwd -P)
 OUT=$(bash -c "source '$RC'; echo \$OUTPOST_NOTES" 2>&1)
 t "quoted safely" '[ "$OUT" = "$RQ/notes" ]'
-[ "$OUT" = "$RQ/notes" ] || printf '        want %s\n        got  %s\n' "$RQ/notes" "$OUT"
+[ "$OUT" = "$RQ/notes" ] || printf '        want %s\n        got  %s\n' "$RQ/notes" "$OUT"; printf '        init exit %s:\n%s\n' "$QRC" "$QOUT"
 
 echo "bash and unsupported shells"
 rm -f "$HOME/.zshrc" "$HOME/.bashrc" "$HOME/.bash_profile"
