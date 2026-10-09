@@ -1,0 +1,2 @@
+# LF everywhere: Git for Windows checks out CRLF by default, and bash fails on "\r".
+* text=auto eol=lf

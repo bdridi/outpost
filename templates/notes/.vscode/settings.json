@@ -1,4 +1,5 @@
 {
   "foam.openDailyNote.directory": "daily",
-  "foam.openDailyNote.onStartup": true
+  "foam.openDailyNote.onStartup": true,
+  "terminal.integrated.defaultProfile.windows": "Git Bash"
 }

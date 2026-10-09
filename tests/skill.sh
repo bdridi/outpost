@@ -26,15 +26,15 @@ t "installed under ~/.copilot/skills" '[ -f "$HOME/.copilot/skills/outpost-note/
 
 echo "idempotence and ownership"
 OUT=$("$OUTPOST" init --no-profile "$M" 2>&1)
-t "rerun: up to date" 'printf "%s" "$OUT" | grep -q "note skill: "'
+t "rerun: up to date" 'grep -q "note skill: " <<<"$OUT"'
 F="$HOME/.copilot/skills/outpost-note/SKILL.md"
 printf 'stale\n<!-- managed by outpost -->\n' > "$F"
 OUT=$("$OUTPOST" init --no-profile "$M" 2>&1)
-t "managed file is updated" 'printf "%s" "$OUT" | grep -q "note skill updated" && grep -q "^name: outpost-note$" "$F"'
+t "managed file is updated" 'grep -q "note skill updated" <<<"$OUT" && grep -q "^name: outpost-note$" "$F"'
 printf 'my own version\n' > "$F"
 OUT=$("$OUTPOST" init --no-profile "$M" 2>&1)
 t "unmanaged file left untouched" '[ "$(cat "$F")" = "my own version" ]'
-t "warning shown" 'printf "%s" "$OUT" | grep -q "not managed by outpost"'
+t "warning shown" 'grep -q "not managed by outpost" <<<"$OUT"'
 
 echo "dry-run and --no-skill"
 rm -rf "$HOME/.claude" "$HOME/.copilot"

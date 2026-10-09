@@ -57,6 +57,7 @@ git clone --branch v0.2.0 https://github.com/bdridi/outpost.git ~/outpost
 
 The clone stays on that tag (detached HEAD): nothing changes until you run `outpost update`.
 Requirements: `bash` and `git`. Add [`git-crypt`](https://github.com/AGWA/git-crypt) for the private notes.
+On Windows, everything runs in **Git Bash** (see [Windows](#-windows)).
 No submodule, no remote linking a mission to this repo.
 
 The first `init` is called with the clone's path, since nothing is installed yet:
@@ -165,7 +166,8 @@ notes. Anything Outpost must be able to change later belongs in `templates/_outp
 
 ## ⚡ Quick capture
 
-`init` adds a block to your shell profile (`~/.zshrc`, or `~/.bash_profile` / `~/.bashrc` for bash),
+`init` adds a block to your shell profile (`~/.zshrc`, or `~/.bash_profile` on macOS / `~/.bashrc`
+elsewhere for bash),
 so `OUTPOST_NOTES`, `outpost`, `n` and `np` are available in every new terminal:
 
 ```sh
@@ -266,6 +268,26 @@ in `*.private.md`; links go private → public only; use neutral file names.
 - [ ] Foam extension allowed in VS Code
 - [ ] `git-crypt` installable, and encrypted content accepted by the client's security on their git
 - [ ] The local agent that runs the weekly review is allowed on the client machine
+- [ ] On Windows: Git for Windows installed (it provides Git Bash)
+
+## 🪟 Windows
+
+Outpost runs in **Git Bash**, the bash that comes with [Git for Windows](https://gitforwindows.org/).
+Same script, same commands, nothing to pass: `init` detects Windows by itself. Run every command
+(`outpost`, `n`, `np`) from a Git Bash terminal, with `/c/Users/...` style paths.
+
+- **Shell profile**: the block goes to `~/.bashrc`. Git Bash is a login shell and reads
+  `~/.bash_profile`, so `init` creates one that loads `~/.bashrc` when you have none; if yours does
+  not load it, you get a warning and the line to add.
+- **VS Code**: new missions set Git Bash as the default terminal in `notes/.vscode/settings.json`,
+  so Copilot runs the note skill in Git Bash. If you open VS Code on another folder, set
+  `"terminal.integrated.defaultProfile.windows": "Git Bash"` in your user settings.
+  Claude Code already uses Git Bash on Windows.
+- **git-crypt**: download the Windows build (`git-crypt-*.exe`) from the
+  [releases](https://github.com/AGWA/git-crypt/releases), rename it `git-crypt.exe` and put it in a
+  folder on your `PATH` (for example `~/bin`).
+- **`outpost update` while VS Code is open**: if a file of `_outpost/` is open, Windows refuses to
+  replace the folder. The previous version is kept whole and you get a warning: close it, re-run.
 
 ## 🧪 Dry run
 
@@ -290,7 +312,8 @@ tests/profile.sh  # shell profile block (temporary HOME as well)
 ```
 
 None of them uses the network or your real home: `update.sh` publishes releases from a local copy
-of this repo.
+of this repo. The Windows paths are covered with `OUTPOST_OS=windows` (it overrides the detection),
+and CI runs the whole suite on Linux, macOS and Windows (Git Bash).
 
 ## 🛣️ Later
 
