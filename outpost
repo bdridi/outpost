@@ -111,9 +111,6 @@ copy_tree() {
   done < <(cd "$from" && find . -type f | LC_ALL=C sort)
 }
 
-# ngit <dir> <git args>: git run from inside <dir> (cd instead of -C, which broke on a path with a quote in Git Bash)
-ngit() { local d="$1"; shift; (cd "$d" && git "$@"); }
-
 write_if_missing() { # <path> ; content on stdin
   if [ -e "$1" ]; then cat >/dev/null; return 0; fi
   mkdir -p "$(dirname "$1")"
@@ -129,12 +126,12 @@ init_notes() {
 
   # 1. git repo (never reuse a parent repo: notes/ gets its own).
   if [ ! -d "$notes/.git" ]; then
-    ngit "$notes" init -q
+    git init -q "$notes"
     ok "git repository initialised"
   else
     ok "git repository"
   fi
-  gitdir=$(ngit "$notes" rev-parse --absolute-git-dir)
+  gitdir=$(git -C "$notes" rev-parse --absolute-git-dir)
 
   # 2. pre-commit hook (installed first so nothing private slips in later). It is a relay to
   #    _outpost/notes/hooks/pre-commit, so the real check is refreshed with _outpost/.
@@ -156,7 +153,7 @@ init_notes() {
   # 3. git-crypt, only on a repo that has no history yet.
   if [ ! -d "$gitdir/git-crypt/keys" ]; then
     # Safe to init as long as no private file was ever committed.
-    if [ "$have_crypt" = 1 ] && [ -z "$(ngit "$notes" ls-files '*.private.md')" ]; then
+    if [ "$have_crypt" = 1 ] && [ -z "$(git -C "$notes" ls-files '*.private.md')" ]; then
       (cd "$notes" && git-crypt init >/dev/null)
       ok "git-crypt initialised"
     elif [ "$have_crypt" = 0 ]; then
@@ -174,9 +171,9 @@ init_notes() {
   write_if_missing "$notes/.gitattributes" <<'EOF'
 *.private.md filter=git-crypt diff=git-crypt
 EOF
-  if [ -f "$notes/.gitattributes" ] && ! ngit "$notes" cat-file -e HEAD:.gitattributes 2>/dev/null; then
-    ngit "$notes" add .gitattributes
-    ngit "$notes" commit -q -m "outpost: git-crypt attributes" -- .gitattributes \
+  if [ -f "$notes/.gitattributes" ] && ! git -C "$notes" cat-file -e HEAD:.gitattributes 2>/dev/null; then
+    git -C "$notes" add .gitattributes
+    git -C "$notes" commit -q -m "outpost: git-crypt attributes" -- .gitattributes \
       || warn "could not commit .gitattributes (git user.name/user.email set?)"
   fi
 
@@ -207,14 +204,14 @@ EOF
     rel="${rel#./}"
     [ -z "$skip" ] || case "$rel" in *.private.md) continue ;; esac
     [ -f "$notes/$rel" ] || continue
-    if ngit "$notes" cat-file -e "HEAD:$rel" 2>/dev/null; then
+    if git -C "$notes" cat-file -e "HEAD:$rel" 2>/dev/null; then
       [ "$rel" = "$foam" ] || continue
-      ngit "$notes" diff --quiet HEAD -- "$rel" && continue
+      git -C "$notes" diff --quiet HEAD -- "$rel" && continue
     fi
-    ngit "$notes" add -- "$rel"; pending+=("$rel")
+    git -C "$notes" add -- "$rel"; pending+=("$rel")
   done < <({ (cd "$TEMPLATES/notes" && find . -type f); echo "$foam"; } | LC_ALL=C sort)
   if [ "${#pending[@]}" -gt 0 ]; then
-    ngit "$notes" commit -q -m "outpost: notes v$VERSION" -- "${pending[@]}" \
+    git -C "$notes" commit -q -m "outpost: notes v$VERSION" -- "${pending[@]}" \
       || warn "could not commit the notes skeleton (git user.name/user.email set?)"
   fi
 }
@@ -583,7 +580,7 @@ cmd_note() {
   suffix=""
   if [ -n "$private" ]; then
     suffix=".private"
-    gitdir=$(ngit "$notes" rev-parse --absolute-git-dir 2>/dev/null) || die "notes/ is not a git repository"
+    gitdir=$(git -C "$notes" rev-parse --absolute-git-dir 2>/dev/null) || die "notes/ is not a git repository"
     [ -d "$gitdir/git-crypt/keys" ] || die "git-crypt is not ready (not initialised or locked): refusing to write a private note"
   fi
 
