@@ -50,7 +50,7 @@ t "bash profile written" '[ -f "$HOME/.bashrc" ] || [ -f "$HOME/.bash_profile" ]
 rm -f "$HOME/.bashrc" "$HOME/.bash_profile"
 OUT=$(SHELL=/usr/bin/fish "$OUTPOST" init "$TMP/m5" --no-skill 2>&1)
 t "fish: nothing written" '[ -z "$(ls -A "$HOME")" ]'
-t "fish: manual lines shown" 'printf "%s" "$OUT" | grep -q "export OUTPOST_NOTES="'
+t "fish: manual lines shown" 'grep -q "export OUTPOST_NOTES=" <<<"$OUT"'
 
 echo "windows (Git Bash)"
 rm -rf "$HOME"; mkdir -p "$HOME"
@@ -66,9 +66,9 @@ t "rerun changes nothing" '[ "$(cat "$HOME/.bash_profile" "$HOME/.bashrc")" = "$
 rm -rf "$HOME"; mkdir -p "$HOME"; printf 'export MINE=1\n' > "$HOME/.bash_profile"
 OUT=$(OUTPOST_OS=windows SHELL=/usr/bin/bash "$OUTPOST" init "$TMP/w3" --no-skill 2>&1)
 t "own .bash_profile untouched" '[ "$(cat "$HOME/.bash_profile")" = "export MINE=1" ]'
-t "warns that it does not load .bashrc" 'printf "%s" "$OUT" | grep -q "does not load ~/.bashrc"'
+t "warns that it does not load .bashrc" 'grep -q "does not load ~/.bashrc" <<<"$OUT"'
 OUT=$(OUTPOST_OS=windows "$OUTPOST" init 'C:/missions/x' --dry-run 2>&1)
-t "dry-run refuses a drive path" 'printf "%s" "$OUT" | grep -q "relative folder name"'
+t "dry-run refuses a drive path" 'grep -q "relative folder name" <<<"$OUT"'
 rm -rf "$HOME"; mkdir -p "$HOME"
 
 echo "dry-run and --no-profile"

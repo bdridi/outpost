@@ -57,7 +57,7 @@ mkdir -p "$SRC/templates/notes/retro" && touch "$SRC/templates/notes/retro/.gitk
 release 1.1.0
 OUT=$(cd "$M/workspace" && "$O" update 2>&1)
 t "clone moved to the new tag" '[ "$(git -C "$INST" describe --tags)" = v1.1.0 ]'
-t "new version announced" 'printf "%s" "$OUT" | grep -q "v1.0.0 -> v1.1.0"'
+t "new version announced" 'grep -q "v1.0.0 -> v1.1.0" <<<"$OUT"'
 t "_outpost/ regenerated" '[ "$(cat "$M/_outpost/VERSION")" = 1.1.0 ] && grep -q "Rule added in 1.1" "$M/_outpost/notes/AGENTS.md"'
 t "no leftover build folder" '[ ! -e "$M/_outpost.new" ]'
 t "foam template follows daily.md" 'grep -q "Daily layout 1.1" "$M/notes/.foam/templates/daily-note.md"'
@@ -73,32 +73,32 @@ snapshot "$M" > "$TMP/s1"
 OUT=$(cd "$M" && "$O" update 2>&1)
 snapshot "$M" > "$TMP/s2"
 t "second update changes nothing" 'diff -q "$TMP/s1" "$TMP/s2" >/dev/null'
-t "reports nothing to do" 'printf "%s" "$OUT" | grep -q "Nothing to do"'
+t "reports nothing to do" 'grep -q "Nothing to do" <<<"$OUT"'
 t "clone stays on the tag" '[ "$(git -C "$INST" describe --tags)" = v1.1.0 ]'
 
 echo "the tool only moves when it is safe"
 printf '# {{date}}\n\nDaily layout 1.2\n' > "$SRC/templates/_outpost/notes/templates/daily.md"; release 1.2.0
 echo x > "$INST/local-change"
 OUT=$(cd "$M" && "$O" update 2>&1)
-t "local changes: clone not moved" '[ "$(git -C "$INST" describe --tags)" = v1.1.0 ] && printf "%s" "$OUT" | grep -q "local changes"'
+t "local changes: clone not moved" '[ "$(git -C "$INST" describe --tags)" = v1.1.0 ] && grep -q "local changes" <<<"$OUT"'
 rm "$INST/local-change"
 OUT=$(cd "$M" && "$O" update --no-fetch 2>&1)
 t "--no-fetch: clone not moved" '[ "$(git -C "$INST" describe --tags)" = v1.1.0 ]'
 git -C "$INST" remote set-url origin "$TMP/nowhere"
 OUT=$(cd "$M" && "$O" update 2>&1)
-t "offline: warning, mission still refreshed" 'printf "%s" "$OUT" | grep -q "could not fetch" && printf "%s" "$OUT" | grep -q "Nothing to do"'
+t "offline: warning, mission still refreshed" 'grep -q "could not fetch" <<<"$OUT" && grep -q "Nothing to do" <<<"$OUT"'
 git -C "$INST" remote set-url origin "$SRC"
 DEV="$TMP/dev"; git clone -q "$SRC" "$DEV"
 OUT=$(cd "$M" && "$DEV/outpost" update 2>&1)
-t "dev clone on a branch: not moved, mission refreshed from it" 'printf "%s" "$OUT" | grep -q "dev clone" && grep -q "Daily layout 1.2" "$M/_outpost/notes/templates/daily.md"'
+t "dev clone on a branch: not moved, mission refreshed from it" 'grep -q "dev clone" <<<"$OUT" && grep -q "Daily layout 1.2" "$M/_outpost/notes/templates/daily.md"'
 
 echo "dry-run"
 "$O" init demo --dry-run >/dev/null 2>&1
 OUT=$("$O" update demo --dry-run 2>&1)
-t "update works on a dry-run mission" 'printf "%s" "$OUT" | grep -q "update \[dry-run\]" && [ -f "$INST/.dry-run/demo/_outpost/VERSION" ]'
+t "update works on a dry-run mission" 'grep -q "update \[dry-run\]" <<<"$OUT" && [ -f "$INST/.dry-run/demo/_outpost/VERSION" ]'
 t "dry-run never moves the clone" '[ "$(git -C "$INST" describe --tags)" = v1.1.0 ]'
 OUT=$(cd "$INST/.dry-run/demo/notes" && "$O" update 2>&1)
-t "found from inside a dry-run mission" 'printf "%s" "$OUT" | grep -q "update \[dry-run\]"'
+t "found from inside a dry-run mission" 'grep -q "update \[dry-run\]" <<<"$OUT"'
 t "real home untouched by dry-run" '[ ! -e "$HOME/.copilot" ]'
 
 echo "mission from before _outpost/"
@@ -110,7 +110,7 @@ git -C "$SRC" show v1.0.0:templates/_outpost/notes/hooks/pre-commit > "$L/notes/
 OUT=$(cd "$L" && "$O" update --no-fetch 2>&1)
 t "_outpost/ created" '[ -f "$L/_outpost/VERSION" ]'
 t "old files kept" '[ -f "$L/notes/templates/daily.md" ] && [ "$(cat "$L/notes/AGENTS.md")" = "# old conventions" ]'
-t "old files reported" 'printf "%s" "$OUT" | grep -q "notes/templates/ is no longer used" && printf "%s" "$OUT" | grep -q "notes/AGENTS.md predates _outpost"'
+t "old files reported" 'grep -q "notes/templates/ is no longer used" <<<"$OUT" && grep -q "notes/AGENTS.md predates _outpost" <<<"$OUT"'
 t "old hook switched to the relay" 'grep -q "_outpost/notes/hooks/pre-commit" "$L/notes/.git/hooks/pre-commit"'
 
 echo "hook relay fails closed"

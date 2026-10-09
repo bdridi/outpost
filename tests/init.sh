@@ -25,7 +25,7 @@ env $ID "$OUTPOST" init "$M" --agent claude >/dev/null 2>&1; snapshot "$M" > "$T
 env $ID "$OUTPOST" init "$M" --agent claude >/dev/null 2>&1; snapshot "$M" > "$TMP/s2"
 t "state identical after a second run" 'diff -q "$TMP/s1" "$TMP/s2" >/dev/null'
 OUT=$(env $ID "$OUTPOST" init "$M" 2>&1)
-t "reports nothing to do" 'printf "%s" "$OUT" | grep -q "Nothing to do"'
+t "reports nothing to do" 'grep -q "Nothing to do" <<<"$OUT"'
 t "notes is clean and committed" '[ -z "$(git -C "$M/notes" status --short)" ] && [ "$(git -C "$M/notes" rev-list --count HEAD)" = 2 ]'
 
 echo "never overwrites"
@@ -51,7 +51,7 @@ echo "_outpost/ in use (a file open on Windows blocks the rename)"
 mkdir -p "$TMP/bin"; printf '#!/bin/sh\ncase "$1" in */_outpost) exit 1 ;; esac\nexec /bin/mv "$@"\n' > "$TMP/bin/mv"; chmod +x "$TMP/bin/mv"
 echo "stale" >> "$M/_outpost/notes/AGENTS.md"
 OUT=$(PATH="$TMP/bin:$PATH" env $ID "$OUTPOST" init "$M" 2>&1)
-t "warns, current _outpost/ kept whole" 'printf "%s" "$OUT" | grep -q "_outpost/ is in use" && grep -q "^stale$" "$M/_outpost/notes/AGENTS.md" && [ -f "$M/_outpost/VERSION" ]'
+t "warns, current _outpost/ kept whole" 'grep -q "_outpost/ is in use" <<<"$OUT" && grep -q "^stale$" "$M/_outpost/notes/AGENTS.md" && [ -f "$M/_outpost/VERSION" ]'
 t "no leftover build folder" '[ ! -e "$M/_outpost.new" ]'
 env $ID "$OUTPOST" init "$M" >/dev/null 2>&1
 t "next run updates it" '! grep -q "^stale$" "$M/_outpost/notes/AGENTS.md" && [ ! -e "$M/_outpost.old" ]'
