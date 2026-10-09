@@ -129,7 +129,7 @@ init_notes() {
 
   # 1. git repo (never reuse a parent repo: notes/ gets its own).
   if [ ! -d "$notes/.git" ]; then
-    git init -q "$notes"
+    ngit "$notes" init -q
     ok "git repository initialised"
   else
     ok "git repository"
