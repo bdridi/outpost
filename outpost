@@ -43,6 +43,12 @@ case "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" in
     I_START=">>"; I_SKILL="[s]"; I_SHELL="[p]"; I_DIR="[+]"; I_NOTES="[n]"; I_OK="ok"; I_WARN="!!"; I_DOT="-"; I_DONE="OK"; I_NEXT="->" ;;
 esac
 
+# Escaping with sed, never ${var//...}: the quotes and backslashes of a ${var//} replacement are
+# not read the same way by bash 3.2 (macOS) and bash 5 (Linux, Git Bash).
+shq()      { printf "'%s'\n" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }  # single-quoted for the shell
+sed_repl() { printf '%s\n' "$1" | sed 's/[\\&|]/\\&/g'; }                    # safe in a sed s|..|HERE|
+tilde()    { case "$1" in "$HOME"|"$HOME"/*) printf '~%s\n' "${1#"$HOME"}" ;; *) printf '%s\n' "$1" ;; esac; }
+
 say()  { printf '%s\n' "$*"; }
 ok()   { printf '   %s%s%s %s\n' "$G" "$I_OK" "$N" "$*"; }
 warn() { WARNINGS+=("$*"); printf '   %s%s %s%s\n' "$Y" "$I_WARN" "$*" "$N"; }
@@ -220,13 +226,12 @@ sync_outpost() {
   cp -R "$TEMPLATES/_outpost/." "$new/"
   printf '%s\n' "$VERSION" > "$new/VERSION"
   # The note skill, with this clone's binary and this mission's notes folder baked in.
-  bin="$OUTPOST_HOME/outpost"; bin=${bin//\\/\\\\}; bin=${bin//&/\\&}; bin=${bin//|/\\|}
-  nd="$root/notes"; nd=${nd//\\/\\\\}; nd=${nd//&/\\&}; nd=${nd//|/\\|}
+  bin=$(sed_repl "$OUTPOST_HOME/outpost")
+  nd=$(sed_repl "$root/notes")
   f="$new/skills/outpost-note/SKILL.md"
   sed "s|{{OUTPOST_BIN}}|$bin|g; s|{{NOTES_DIR}}|$nd|g" "$f" > "$f.tmp" && mv "$f.tmp" "$f"
   # n / np, sourced by the shell profile: this clone's binary, single-quoted for the shell.
-  qbin="'${OUTPOST_HOME//\'/\'\\\'\'}/outpost'"
-  qbin=${qbin//\\/\\\\}; qbin=${qbin//&/\\&}; qbin=${qbin//|/\\|}
+  qbin=$(sed_repl "$(shq "$OUTPOST_HOME/outpost")")
   f="$new/shell/commands.sh"
   sed "s|{{OUTPOST_BIN_QUOTED}}|$qbin|g" "$f" > "$f.tmp" && mv "$f.tmp" "$f"
 
@@ -408,7 +413,7 @@ install_skill() {
     copilot) rel=".copilot/skills/outpost-note" ;;
   esac
   dir="$base/$rel"
-  shown="${dir/#"$HOME"/\~}"
+  shown=$(tilde "$dir")
   src="$root/_outpost/skills/outpost-note/SKILL.md"
   if [ ! -e "$dir/SKILL.md" ]; then
     mkdir -p "$dir"; cp "$src" "$dir/SKILL.md"
@@ -432,8 +437,8 @@ install_profile() {
   local base="$1" root="$2" notes_dir="$2/notes" sh rc shown q_notes q_src line inblock=0 found=0 tmp
   local begin='# >>> outpost >>> (managed by outpost: re-running init rewrites this block)'
   local end='# <<< outpost <<<'
-  q_notes="'${notes_dir//\'/\'\\\'\'}'"
-  q_src="'${root//\'/\'\\\'\'}/_outpost/shell/commands.sh'"
+  q_notes=$(shq "$notes_dir")
+  q_src=$(shq "$root/_outpost/shell/commands.sh")
   PROFILE_MANUAL="export OUTPOST_NOTES=$q_notes
 source $q_src"
 
@@ -444,7 +449,7 @@ source $q_src"
     *)    warn "shell '${sh:-unknown}' is not supported (bash or zsh): add these lines to your profile yourself"
           return 0 ;;
   esac
-  shown="${rc/#"$HOME"/\~}"
+  shown=$(tilde "$rc")
 
   tmp=$(mktemp)
   if [ -f "$rc" ]; then
@@ -491,7 +496,7 @@ bash_login_loads_rc() {
       || warn "~/$f does not load ~/.bashrc: add 'test -f ~/.bashrc && . ~/.bashrc' to it, or Git Bash will not have outpost, n and np"
     return 0
   done
-  shown="${base/#"$HOME"/\~}/.bash_profile"
+  shown=$(tilde "$base/.bash_profile")
   printf '%s\n' '# created by outpost: Git Bash is a login shell, load ~/.bashrc' \
     'test -f ~/.profile && . ~/.profile' 'test -f ~/.bashrc && . ~/.bashrc' > "$base/.bash_profile"
   ok "$shown created (Git Bash loads ~/.bashrc through it)"
