@@ -46,7 +46,8 @@ t "lines before and after are kept" 'grep -q "^alias ll=" "$RC" && grep -q "^exp
 echo "paths with a quote"
 Q="$TMP/it's here"; init "$Q" --no-skill; RQ=$(cd "$Q" && pwd -P)
 OUT=$(bash -c "source '$RC'; echo \$OUTPOST_NOTES" 2>&1)
-t "quoted safely" '[ "$OUT" = "$RQ/notes" ]' || printf '        want %s\n        got  %s\n' "$RQ/notes" "$OUT"
+t "quoted safely" '[ "$OUT" = "$RQ/notes" ]'
+[ "$OUT" = "$RQ/notes" ] || printf '        want %s\n        got  %s\n' "$RQ/notes" "$OUT"
 
 echo "bash and unsupported shells"
 rm -f "$HOME/.zshrc" "$HOME/.bashrc" "$HOME/.bash_profile"
